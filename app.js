@@ -2,10 +2,10 @@
 'use strict';
 
 class ApiKeyManager {
-  getGroqKey() { return localStorage.getItem('audio_tutor_groq_key') || ''; }
-  setGroqKey(key) { localStorage.setItem('audio_tutor_groq_key', key.trim()); }
-  getGeminiKey() { return localStorage.getItem('audio_tutor_gemini_key') || ''; }
-  setGeminiKey(key) { localStorage.setItem('audio_tutor_gemini_key', key.trim()); }
+  getGroqKey() { return (localStorage.getItem('audio_tutor_groq_key') || '').trim(); }
+  setGroqKey(key) { localStorage.setItem('audio_tutor_groq_key', (key || '').trim()); }
+  getGeminiKey() { return (localStorage.getItem('audio_tutor_gemini_key') || '').trim(); }
+  setGeminiKey(key) { localStorage.setItem('audio_tutor_gemini_key', (key || '').trim()); }
   hasAllKeys() { return !!this.getGroqKey() && !!this.getGeminiKey(); }
 }
 
@@ -127,6 +127,7 @@ class AudioPipeline {
   constructor(apiKeys, onProgress) {
     this.apiKeys = apiKeys;
     this.onProgress = onProgress;
+    this._workingGeminiModel = null;
   }
   
   async extractAudio(file) {
@@ -190,11 +191,18 @@ class AudioPipeline {
   async _prepareAudioChunks(audioBlob) {
     const CHUNK_DURATION = 600;
     try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       const arrayBuffer = await audioBlob.arrayBuffer();
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const decoded = await audioCtx.decodeAudioData(arrayBuffer);
       audioCtx.close();
       const totalDuration = decoded.duration;
+      
+      if (totalDuration <= CHUNK_DURATION) {
+        const pcm = decoded.getChannelData(0);
+        const wavBlob = this._encodeWav(pcm, 16000);
+        return [{ blob: wavBlob, timeOffset: 0, duration: totalDuration }];
+      }
+      
       const chunks = [];
       for (let start = 0; start < totalDuration; start += CHUNK_DURATION) {
         const end = Math.min(totalDuration, start + CHUNK_DURATION);
@@ -265,6 +273,62 @@ class AudioPipeline {
     return await res.json();
   }
   
+  async _getAvailableGeminiModel() {
+    if (this._workingGeminiModel) return this._workingGeminiModel;
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${this.apiKeys.geminiKey}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const models = (data.models || [])
+          .filter(m => m.supportedGenerationMethods && m.supportedGenerationMethods.includes('generateContent'))
+          .map(m => m.name.replace(/^models\//, ''));
+        
+        console.log('[Gemini] 支援 generateContent 的模型清單:', models);
+
+        // 優先順序：以最經濟、高速度的 Flash-Lite 與 Flash 系列為第一優先
+        const preferred = [
+          'gemini-3.5-flash-lite',
+          'gemini-flash-lite-latest',
+          'gemini-3.1-flash-lite',
+          'gemini-3.5-flash',
+          'gemini-2.5-flash',
+          'gemini-flash-latest',
+          'gemini-3.6-flash',
+          'gemini-3.7-flash',
+          'gemini-3-flash-preview',
+          'gemini-2.0-flash',
+          'gemini-1.5-flash'
+        ];
+        for (const pref of preferred) {
+          if (models.includes(pref)) {
+            this._workingGeminiModel = pref;
+            console.log('[Gemini] 自動選定最佳經濟模型:', pref);
+            return pref;
+          }
+        }
+        const anyFlashLite = models.find(m => m.includes('flash-lite') || m.includes('flash_lite'));
+        if (anyFlashLite) {
+          this._workingGeminiModel = anyFlashLite;
+          return anyFlashLite;
+        }
+        const anyFlash = models.find(m => m.includes('flash'));
+        if (anyFlash) {
+          this._workingGeminiModel = anyFlash;
+          return anyFlash;
+        }
+        if (models.length > 0) {
+          this._workingGeminiModel = models[0];
+          return models[0];
+        }
+      }
+    } catch (e) {
+      console.warn('[Gemini] 無法動態取得模型清單，使用預設候選列表:', e);
+    }
+    return 'gemini-3.5-flash-lite';
+  }
+
   async analyzeWithGemini(segments, sourceLang = 'en') {
     this.onProgress('analyze', 0, '開始語意解析...');
     const BATCH_SIZE = 10;
@@ -310,21 +374,16 @@ ${JSON.stringify(sentences)}
 請輸出 JSON 陣列：
 [{ "id": 1, "explanation": "這句話意思是...，重點片語是...代表...", "cefr": "B1" }]`;
     
-    // 多重 Gemini 模型容錯優先鏈 (支援 2.5-flash, 2.0-flash, 1.5-flash, 2.0-flash-lite)
+    const primaryModel = await this._getAvailableGeminiModel();
     const candidateModels = [
+      primaryModel,
+      'gemini-3.5-flash-lite',
+      'gemini-flash-lite-latest',
+      'gemini-3.1-flash-lite',
+      'gemini-3.5-flash',
       'gemini-2.5-flash',
-      'gemini-2.0-flash',
-      'gemini-1.5-flash',
-      'gemini-2.0-flash-lite'
-    ];
-
-    if (this._workingGeminiModel) {
-      const idx = candidateModels.indexOf(this._workingGeminiModel);
-      if (idx > -1) {
-        candidateModels.splice(idx, 1);
-        candidateModels.unshift(this._workingGeminiModel);
-      }
-    }
+      'gemini-flash-latest'
+    ].filter((v, i, a) => v && a.indexOf(v) === i);
 
     let lastError = null;
 
@@ -349,7 +408,12 @@ ${JSON.stringify(sentences)}
           if (text) {
             try {
               const cleanText = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-              return JSON.parse(cleanText);
+              const parsed = JSON.parse(cleanText);
+              if (Array.isArray(parsed)) return parsed;
+              if (parsed && typeof parsed === 'object') {
+                const arrKey = Object.keys(parsed).find(k => Array.isArray(parsed[k]));
+                if (arrKey) return parsed[arrKey];
+              }
             } catch (parseErr) {
               console.warn(`JSON parse failed for model ${model}:`, parseErr);
             }
