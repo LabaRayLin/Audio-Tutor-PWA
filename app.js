@@ -293,7 +293,7 @@ class AudioPipeline {
   async _explainBatch(batch, startIdx, sourceLang) {
     const sentences = batch.map((s, i) => ({ id: startIdx + i + 1, text: s.text }));
     const langMap = {
-      'en': '英文', 'ja': '日文', 'ko': '韓文', 'es': '西班牙文', 'fr': '法文'
+      'en': '英文', 'ja': '日文', 'ko': '韓文', 'es': '西班牙文', 'fr': '法文', 'de': '德文'
     };
     const langName = langMap[sourceLang] || '外語';
     
@@ -310,29 +310,64 @@ ${JSON.stringify(sentences)}
 請輸出 JSON 陣列：
 [{ "id": 1, "explanation": "這句話意思是...，重點片語是...代表...", "cefr": "B1" }]`;
     
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${this.apiKeys.geminiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: 'application/json' }
-        })
+    // 多重 Gemini 模型容錯優先鏈 (支援 2.5-flash, 2.0-flash, 1.5-flash, 2.0-flash-lite)
+    const candidateModels = [
+      'gemini-2.5-flash',
+      'gemini-2.0-flash',
+      'gemini-1.5-flash',
+      'gemini-2.0-flash-lite'
+    ];
+
+    if (this._workingGeminiModel) {
+      const idx = candidateModels.indexOf(this._workingGeminiModel);
+      if (idx > -1) {
+        candidateModels.splice(idx, 1);
+        candidateModels.unshift(this._workingGeminiModel);
       }
-    );
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Gemini API 錯誤 (${res.status}): ${err}`);
     }
-    const data = await res.json();
-    try {
-      const text = data.candidates[0].content.parts[0].text;
-      return JSON.parse(text);
-    } catch(e) {
-      console.warn('Gemini response parse failed', e);
-      return batch.map((_, i) => ({ id: startIdx + i + 1, explanation: '', cefr: 'B1' }));
+
+    let lastError = null;
+
+    for (const model of candidateModels) {
+      try {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${this.apiKeys.geminiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: { responseMimeType: 'application/json' }
+            })
+          }
+        );
+
+        if (res.ok) {
+          const data = await res.json();
+          this._workingGeminiModel = model;
+          const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) {
+            try {
+              const cleanText = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+              return JSON.parse(cleanText);
+            } catch (parseErr) {
+              console.warn(`JSON parse failed for model ${model}:`, parseErr);
+            }
+          }
+        } else {
+          const err = await res.text();
+          console.warn(`Gemini model ${model} failed (${res.status}):`, err);
+          lastError = new Error(`Gemini API 錯誤 (${res.status}): ${err}`);
+        }
+      } catch (networkErr) {
+        console.warn(`Gemini model ${model} network error:`, networkErr);
+        lastError = networkErr;
+      }
     }
+
+    console.error('All Gemini candidate models failed. Last error:', lastError);
+    if (lastError) throw lastError;
+    return batch.map((_, i) => ({ id: startIdx + i + 1, explanation: '', cefr: 'B1' }));
   }
 }
 
@@ -875,16 +910,36 @@ class PodcastManager {
     this.stopPreview();
     if (onProgress) onProgress('下載 Podcast 音訊...', 15);
 
-    let res;
+    let res = null;
+    // 1. Try local server proxy (when running locally)
     try {
       res = await fetch('/api/proxy?url=' + encodeURIComponent(audioUrl));
-      if (!res.ok) throw new Error('Proxy status ' + res.status);
+      if (!res.ok) res = null;
     } catch (e) {
-      console.warn('Proxy audio download failed, trying direct:', e);
-      res = await fetch(audioUrl);
+      res = null;
     }
 
-    if (!res.ok) throw new Error(`音訊下載失敗 (${res.status})`);
+    // 2. Try direct fetch (many podcast CDNs like Libsyn / NPR / BBC support CORS)
+    if (!res) {
+      try {
+        res = await fetch(audioUrl);
+        if (!res.ok) res = null;
+      } catch (e) {
+        res = null;
+      }
+    }
+
+    // 3. Try public CORS proxy fallback (e.g. for GitHub Pages)
+    if (!res) {
+      try {
+        res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(audioUrl)}`);
+        if (!res.ok) res = null;
+      } catch (e) {
+        res = null;
+      }
+    }
+
+    if (!res || !res.ok) throw new Error(`音訊下載失敗：無法取得音訊串流`);
     
     if (onProgress) onProgress('正在讀取音訊串流...', 60);
     const blob = await res.blob();
@@ -1212,6 +1267,9 @@ class UIController {
     try {
       const feedData = await this.podcasts.fetchFeed(podcast.feedUrl);
       this.currentEpisodes = feedData.episodes || [];
+      if (feedData.cover && coverImg) {
+        coverImg.src = feedData.cover;
+      }
       loading?.classList.add('hidden');
       this._renderEpisodes(this.currentEpisodes);
     } catch (e) {
