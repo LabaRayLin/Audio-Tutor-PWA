@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Audio Tutor — 聽覺沉浸式學習</title>
-  <link rel="stylesheet" href="style.css?v=2.1">
+  <link rel="stylesheet" href="style.css?v=2.3">
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -278,7 +278,10 @@
               <h3 id="file-name" class="player-file-name truncate">未知檔案</h3>
               <span id="sentence-progress" class="progress-text">第 0 / 0 句</span>
             </div>
-            <div id="play-state" class="state-badge">準備中</div>
+            <div class="player-header-actions">
+              <button id="btn-player-download" class="btn-player-action" title="下載當前 MP3 音訊檔">📥 下載 MP3</button>
+              <div id="play-state" class="state-badge">準備中</div>
+            </div>
           </div>
 
           <!-- Seek bar -->
@@ -329,6 +332,6 @@
     <!-- Toast Notification Container -->
     <div id="toast-container"></div>
   </div>
-  <script src="app.js?v=2.1"></script>
+  <script src="app.js?v=2.3"></script>
 </body>
 </html>

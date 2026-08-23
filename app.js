@@ -1152,6 +1152,16 @@ class UIController {
     const btnReplay = document.getElementById('btn-replay');
     if (btnReplay) btnReplay.addEventListener('click', () => this.player?.replayCurrent());
 
+    // 下載當前播放 MP3 音訊檔
+    const btnPlayerDownload = document.getElementById('btn-player-download');
+    btnPlayerDownload?.addEventListener('click', () => {
+      if (this.currentSession) {
+        this._downloadSessionAudio(this.currentSession.id, this.currentSession.fileName);
+      } else {
+        this._showToast('尚無可下載的音訊', 'error');
+      }
+    });
+
     // 返回選集清單 / 更換單集
     const btnBackHome = document.getElementById('btn-back-home');
     btnBackHome?.addEventListener('click', () => {
@@ -1365,6 +1375,7 @@ class UIController {
         ${ep.desc ? `<p class="ep-summary">${this._escapeHtml(ep.desc)}</p>` : ''}
         <div class="ep-actions">
           <button class="btn-preview-audio" data-url="${this._escapeHtml(ep.audioUrl)}">▶️ 試聽</button>
+          <button class="btn-download-ep" data-title="${this._escapeHtml(ep.title)}" data-url="${this._escapeHtml(ep.audioUrl)}">📥 下載 MP3</button>
           <button class="btn-learn" data-title="${this._escapeHtml(ep.title)}" data-url="${this._escapeHtml(ep.audioUrl)}">🎧 開始沉浸式學習</button>
         </div>
       `;
@@ -1379,6 +1390,27 @@ class UIController {
           });
           btnPreview.textContent = isPlaying ? '⏸️ 暫停' : '▶️ 試聽';
         });
+      });
+
+      // Direct download button
+      const btnDownloadEp = item.querySelector('.btn-download-ep');
+      btnDownloadEp?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        try {
+          this._showToast(`正在下載單集音訊：${ep.title}...`);
+          const file = await this.podcasts.downloadEpisodeAudio(ep.audioUrl, ep.title, (msg) => this._showToast(msg));
+          const url = URL.createObjectURL(file);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = file.name || `${ep.title}.mp3`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 6000);
+          this._showToast(`✅ 下載完成：${file.name}`);
+        } catch (err) {
+          this._showToast(`❌ 下載失敗：${err.message}`, 'error');
+        }
       });
 
       // Learn button (import into audio tutor pipeline)
@@ -1452,19 +1484,42 @@ class UIController {
           ${ep.desc ? `<p class="ep-summary">${this._escapeHtml(ep.desc)}</p>` : ''}
           <div class="ep-actions">
             <button class="btn-preview-audio">▶️ 試聽</button>
+            <button class="btn-download-ep">📥 下載 MP3</button>
             <button class="btn-learn">🎧 開始沉浸式學習</button>
           </div>
         `;
 
         const btnPreview = item.querySelector('.btn-preview-audio');
-        btnPreview?.addEventListener('click', () => {
+        btnPreview?.addEventListener('click', (e) => {
+          e.stopPropagation();
           this.podcasts.togglePreview(ep.audioUrl, (isPlaying) => {
             btnPreview.textContent = isPlaying ? '⏸️ 暫停' : '▶️ 試聽';
           });
         });
 
+        const btnDownloadEp = item.querySelector('.btn-download-ep');
+        btnDownloadEp?.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          try {
+            this._showToast(`正在下載單集音訊：${ep.title}...`);
+            const file = await this.podcasts.downloadEpisodeAudio(ep.audioUrl, ep.title, (msg) => this._showToast(msg));
+            const url = URL.createObjectURL(file);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = file.name || `${ep.title}.mp3`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 6000);
+            this._showToast(`✅ 下載完成：${file.name}`);
+          } catch (err) {
+            this._showToast(`❌ 下載失敗：${err.message}`, 'error');
+          }
+        });
+
         const btnLearn = item.querySelector('.btn-learn');
-        btnLearn?.addEventListener('click', () => {
+        btnLearn?.addEventListener('click', (e) => {
+          e.stopPropagation();
           this._startPodcastLearning(ep.title, ep.audioUrl);
         });
 
@@ -1582,6 +1637,15 @@ class UIController {
         btnResume.className = 'btn-resume';
         btnResume.textContent = '▶ 繼續精聽';
         btnResume.onclick = () => this._resumeSession(session.id);
+
+        const btnDownload = document.createElement('button');
+        btnDownload.className = 'btn-download';
+        btnDownload.innerHTML = '📥 下載';
+        btnDownload.title = '下載 MP3 音訊檔案';
+        btnDownload.onclick = (e) => {
+          e.stopPropagation();
+          this._downloadSessionAudio(session.id, session.fileName);
+        };
         
         const btnDel = document.createElement('button');
         btnDel.className = 'btn-delete';
@@ -1590,6 +1654,7 @@ class UIController {
         btnDel.onclick = (e) => { e.stopPropagation(); this._deleteSession(session.id); };
         
         actions.appendChild(btnResume);
+        actions.appendChild(btnDownload);
         actions.appendChild(btnDel);
         
         card.appendChild(info);
@@ -1598,6 +1663,33 @@ class UIController {
       });
     } catch(e) {
       console.warn('Failed to load history', e);
+    }
+  }
+
+  async _downloadSessionAudio(sessionId, fileName) {
+    try {
+      this._showToast('正在準備音訊下載...');
+      const audioBlob = await this.storage.loadAudio(sessionId);
+      if (!audioBlob) {
+        this._showToast('找不到本機音訊檔案', 'error');
+        return;
+      }
+      const url = URL.createObjectURL(audioBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      let safeName = fileName || 'audio-tutor-track';
+      if (!safeName.toLowerCase().endsWith('.mp3') && !safeName.toLowerCase().endsWith('.m4a') && !safeName.toLowerCase().endsWith('.wav')) {
+        safeName += '.mp3';
+      }
+      a.download = safeName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 6000);
+      this._showToast(`✅ 已開始下載：${safeName}`);
+    } catch (e) {
+      console.error('Download audio failed:', e);
+      this._showToast(`❌ 下載失敗: ${e.message}`, 'error');
     }
   }
   
