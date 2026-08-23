@@ -1,0 +1,14 @@
+{
+  "name": "Audio Tutor — 聽覺沉浸式學習",
+  "short_name": "Audio Tutor",
+  "description": "音訊導覽式語言學習 PWA，將音檔切句並穿插 AI 語音講解",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "categories": ["education", "utilities"]
+}
