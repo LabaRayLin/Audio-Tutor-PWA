@@ -217,35 +217,19 @@ class NeuralTtsService {
     const ratePercent = Math.round((rate - 1.0) * 100);
     const rateStr = (ratePercent >= 0 ? `+${ratePercent}%` : `${ratePercent}%`);
 
-    const customEndpoint = (localStorage.getItem('audio_tutor_edge_endpoint') || '').trim();
-    const candidateUrls = [];
-
-    if (customEndpoint) {
-      // 支援使用者輸入完整 URL 或 Base URL
-      candidateUrls.push(customEndpoint);
-      if (!customEndpoint.endsWith('/api/tts') && !customEndpoint.endsWith('/tts') && !customEndpoint.endsWith('/v1/audio/speech')) {
-        candidateUrls.push(`${customEndpoint.replace(/\/+$/, '')}/api/tts`);
-        candidateUrls.push(`${customEndpoint.replace(/\/+$/, '')}/tts`);
+    // 本機開發伺服器 /api/tts (需啟動本機 python server.py)
+    try {
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice, rate: rateStr })
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob && blob.size > 100) return blob;
       }
-    }
-
-    // 本機開發伺服器 /api/tts
-    candidateUrls.push('/api/tts');
-
-    for (const url of candidateUrls) {
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, voice, rate: rateStr, speed: rate, input: text })
-        });
-        if (res.ok) {
-          const blob = await res.blob();
-          if (blob && blob.size > 100) return blob;
-        }
-      } catch (err) {
-        console.warn(`[Edge-TTS] 嘗試端點 ${url} 失敗:`, err);
-      }
+    } catch (err) {
+      console.warn('[Edge-TTS] 本機 API 連線失敗 (請確認 python server.py 是否啟動):', err);
     }
 
     return null;
@@ -1897,21 +1881,9 @@ class UIController {
     if (ttsEngine) {
       ttsEngine.addEventListener('change', e => {
         localStorage.setItem('audio_tutor_tts_engine', e.target.value);
-        const edgeGroup = document.getElementById('edge-endpoint-group');
-        if (edgeGroup) edgeGroup.classList.toggle('hidden', e.target.value !== 'edge');
         this._populateVoices();
         const curVoice = document.getElementById('tts-voice')?.value;
         if (this.player) this.player.updateOptions({ ttsEngine: e.target.value, ttsVoice: curVoice });
-      });
-    }
-
-    // Edge-TTS 雲端端點儲存
-    const btnSaveEdgeEndpoint = document.getElementById('btn-save-edge-endpoint');
-    if (btnSaveEdgeEndpoint) {
-      btnSaveEdgeEndpoint.addEventListener('click', () => {
-        const val = document.getElementById('edge-endpoint-input')?.value.trim() || '';
-        localStorage.setItem('audio_tutor_edge_endpoint', val);
-        this._showToast(val ? '✅ Edge-TTS 雲端代理端點已儲存' : '⚠️ 已清除自訂 Edge-TTS 端點 (使用預設)');
       });
     }
 
@@ -2327,13 +2299,6 @@ class UIController {
     const replayEl = document.getElementById('toggle-replay');
     if (replayEl) replayEl.checked = replay;
 
-    const edgeEndpoint = localStorage.getItem('audio_tutor_edge_endpoint') || '';
-    const edgeEndpointInput = document.getElementById('edge-endpoint-input');
-    if (edgeEndpointInput) edgeEndpointInput.value = edgeEndpoint;
-
-    const edgeGroup = document.getElementById('edge-endpoint-group');
-    if (edgeGroup) edgeGroup.classList.toggle('hidden', engine !== 'edge');
-
     this._populateVoices();
   }
   
@@ -2388,17 +2353,39 @@ class UIController {
         return;
       }
 
-      const zhVoices = voices.filter(v => v.lang.startsWith('zh') || v.lang.includes('TW') || v.lang.includes('Hant') || v.lang.includes('cmn'));
+      const zhVoices = voices.filter(v => 
+        v.lang.toLowerCase().startsWith('zh') || 
+        v.lang.toLowerCase().includes('tw') || 
+        v.lang.toLowerCase().includes('hant') || 
+        v.lang.toLowerCase().includes('cmn')
+      );
       const list = zhVoices.length > 0 ? zhVoices : voices;
+
+      // 智慧排序：高擬真神經音 (Natural / Google / Apple) 排在最前
+      list.sort((a, b) => {
+        const score = (v) => {
+          let s = 0;
+          const n = v.name.toLowerCase();
+          const l = v.lang.toLowerCase();
+          if (n.includes('natural') || n.includes('online')) s += 100;
+          if (n.includes('google')) s += 80;
+          if (n.includes('mei-jia') || n.includes('sin-ji') || n.includes('siri')) s += 70;
+          if (l.includes('tw') || l.includes('hant')) s += 50;
+          return s;
+        };
+        return score(b) - score(a);
+      });
 
       list.forEach(v => {
         const option = document.createElement('option');
         option.value = v.name;
         let prefix = '🗣️ ';
-        if (v.name.includes('Natural') || v.name.includes('Online')) prefix = '✨ ';
-        else if (v.name.includes('Google')) prefix = '🌟 ';
-        else if (v.lang === 'zh-TW' || v.name.includes('Taiwan') || v.name.includes('臺灣')) prefix = '🇹🇼 ';
-        else if (v.lang === 'zh-HK' || v.name.includes('Hong Kong')) prefix = '🇭🇰 ';
+        const name = v.name;
+        if (name.includes('Natural') || name.includes('Online')) prefix = '✨ [微軟 Natural] ';
+        else if (name.includes('Google')) prefix = '🌟 [Google 雲端] ';
+        else if (name.includes('Mei-Jia') || name.includes('Sin-Ji') || name.includes('Siri')) prefix = '🍎 [Apple 真人] ';
+        else if (v.lang.includes('TW') || name.includes('Taiwan') || name.includes('臺灣') || name.includes('台灣')) prefix = '🇹🇼 ';
+        else if (v.lang.includes('HK') || name.includes('Hong Kong')) prefix = '🇭🇰 ';
 
         option.textContent = `${prefix}${v.name} (${v.lang})`;
         if (savedVoice === v.name) option.selected = true;
@@ -2406,9 +2393,8 @@ class UIController {
       });
 
       if (!select.value && select.options.length > 0) {
-        const best = Array.from(select.options).find(o => o.text.includes('Google') || o.text.includes('Natural') || o.text.includes('🇹🇼'));
-        if (best) best.selected = true;
-        else select.options[0].selected = true;
+        select.options[0].selected = true;
+        localStorage.setItem('audio_tutor_tts_voice', select.options[0].value);
       }
     }
   }
@@ -3050,12 +3036,7 @@ class UIController {
           await audio.play();
           return;
         } else {
-          const customEndpoint = (localStorage.getItem('audio_tutor_edge_endpoint') || '').trim();
-          if (!customEndpoint) {
-            this._showToast('💡 提示：在 GitHub Pages 上使用 Edge-TTS，請在下方「Edge-TTS 雲端代理端點」填入免費 Cloudflare Worker 網址！', 'error');
-          } else {
-            this._showToast(`❌ 無法連線至 Edge-TTS 代理端點 (${customEndpoint})，請檢查 Worker 網址是否正確。`, 'error');
-          }
+          this._showToast('⚠️ Edge-TTS 需要啟動本機 python server.py。若在 GitHub Pages 上，請切換至「💻 瀏覽器高擬真語音」或「🤖 OpenAI TTS-1」！', 'error');
           onFinish();
           return;
         }
