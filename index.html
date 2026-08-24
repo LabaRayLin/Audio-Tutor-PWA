@@ -355,7 +355,34 @@
 
     <!-- Toast Notification Container -->
     <div id="toast-container"></div>
+
+    <!-- Download / Export Modal -->
+    <div id="download-modal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 id="modal-download-title">📥 選擇下載音訊格式</h3>
+          <button id="btn-close-download-modal" class="modal-close-btn" aria-label="Close">&times;</button>
+        </div>
+        <p class="modal-subtext" id="modal-download-desc">請選擇您希望下載或匯出的音訊版本：</p>
+        <div class="modal-options">
+          <button id="btn-export-tutor-audio" class="modal-option-btn primary-option">
+            <span class="option-icon">🎧</span>
+            <div class="option-text">
+              <strong>匯出 AI 語音導覽版 (含中英精聽與講解)</strong>
+              <small>將原句、AI 中文解析與重複精聽無縫混音為完整學習單集 (推薦)</small>
+            </div>
+          </button>
+          <button id="btn-download-raw-audio" class="modal-option-btn secondary-option">
+            <span class="option-icon">📁</span>
+            <div class="option-text">
+              <strong>下載原始音訊檔 (純原音)</strong>
+              <small>下載未包含 AI 語音講解的原始音訊檔案</small>
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
-  <script src="app.js?v=3.0"></script>
+  <script src="app.js?v=3.1"></script>
 </body>
 </html>

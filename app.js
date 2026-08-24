@@ -1720,11 +1720,38 @@ class UIController {
     const btnReplay = document.getElementById('btn-replay');
     if (btnReplay) btnReplay.addEventListener('click', () => this.player?.replayCurrent());
 
-    // 下載當前播放 MP3 音訊檔
+    // 下載彈窗按鈕
+    const btnCloseModal = document.getElementById('btn-close-download-modal');
+    btnCloseModal?.addEventListener('click', () => this._closeDownloadModal());
+
+    const downloadModal = document.getElementById('download-modal');
+    downloadModal?.addEventListener('click', (e) => {
+      if (e.target === downloadModal) this._closeDownloadModal();
+    });
+
+    const btnExportTutor = document.getElementById('btn-export-tutor-audio');
+    btnExportTutor?.addEventListener('click', async () => {
+      const session = this._pendingDownloadSession;
+      this._closeDownloadModal();
+      if (session) {
+        await this._exportFullTutorAudio(session);
+      }
+    });
+
+    const btnDownloadRaw = document.getElementById('btn-download-raw-audio');
+    btnDownloadRaw?.addEventListener('click', () => {
+      const session = this._pendingDownloadSession;
+      this._closeDownloadModal();
+      if (session) {
+        this._downloadRawAudio(session.id, session.fileName);
+      }
+    });
+
+    // 播放器下載按鈕
     const btnPlayerDownload = document.getElementById('btn-player-download');
     btnPlayerDownload?.addEventListener('click', () => {
       if (this.currentSession) {
-        this._downloadSessionAudio(this.currentSession.id, this.currentSession.fileName);
+        this._showDownloadModal(this.currentSession);
       } else {
         this._showToast('尚無可下載的音訊', 'error');
       }
@@ -2278,10 +2305,10 @@ class UIController {
         const btnDownload = document.createElement('button');
         btnDownload.className = 'btn-download';
         btnDownload.innerHTML = '📥 下載';
-        btnDownload.title = '下載 MP3 音訊檔案';
+        btnDownload.title = '下載音訊 (AI 精聽導覽版 / 原始檔)';
         btnDownload.onclick = (e) => {
           e.stopPropagation();
-          this._downloadSessionAudio(session.id, session.fileName);
+          this._showDownloadModal(session);
         };
         
         const btnDel = document.createElement('button');
@@ -2303,9 +2330,25 @@ class UIController {
     }
   }
 
-  async _downloadSessionAudio(sessionId, fileName) {
+  _showDownloadModal(session) {
+    this._pendingDownloadSession = session;
+    const modal = document.getElementById('download-modal');
+    const titleEl = document.getElementById('modal-download-title');
+    const descEl = document.getElementById('modal-download-desc');
+    if (titleEl) titleEl.textContent = `📥 下載：${session.fileName || '音訊特輯'}`;
+    if (descEl) descEl.textContent = `共 ${session.segments?.length || 0} 句精聽分析，請選擇您要下載或匯出的格式：`;
+    if (modal) modal.classList.remove('hidden');
+  }
+
+  _closeDownloadModal() {
+    const modal = document.getElementById('download-modal');
+    if (modal) modal.classList.add('hidden');
+    this._pendingDownloadSession = null;
+  }
+
+  async _downloadRawAudio(sessionId, fileName) {
     try {
-      this._showToast('正在準備音訊下載...');
+      this._showToast('正在準備原始音訊下載...');
       const audioBlob = await this.storage.loadAudio(sessionId);
       if (!audioBlob) {
         this._showToast('找不到本機音訊檔案', 'error');
@@ -2323,11 +2366,233 @@ class UIController {
       a.click();
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 6000);
-      this._showToast(`✅ 已開始下載：${safeName}`);
+      this._showToast(`✅ 已開始下載原始音檔：${safeName}`);
     } catch (e) {
-      console.error('Download audio failed:', e);
+      console.error('Download raw audio failed:', e);
       this._showToast(`❌ 下載失敗: ${e.message}`, 'error');
     }
+  }
+
+  async _exportFullTutorAudio(session) {
+    try {
+      this._showToast('🎧 正在開始合成與混音 AI 精聽導覽特輯...');
+      const wavBlob = await this.exportTutorAudio(session, (msg, pct) => {
+        this._showToast(`${msg} (${pct}%)`);
+      });
+
+      const url = URL.createObjectURL(wavBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      let baseName = (session.fileName || 'Audio_Tutor').replace(/\.[^/.]+$/, '');
+      const downloadName = `${baseName}_AI精聽導覽版.wav`;
+      a.download = downloadName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      this._showToast(`🎉 成功匯出 AI 導覽音訊：${downloadName}`);
+    } catch (e) {
+      console.error('Export tutor audio failed:', e);
+      this._showToast(`❌ 匯出失敗：${e.message}`, 'error');
+    }
+  }
+
+  async exportTutorAudio(session, onProgress) {
+    const audioBlob = await this.storage.loadAudio(session.id);
+    if (!audioBlob) throw new Error('找不到本機音訊檔案');
+
+    const segments = session.segments || [];
+    if (segments.length === 0) throw new Error('此單集尚無解析數據');
+
+    if (onProgress) onProgress('正在解碼原始音訊...', 5);
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    const tempCtx = new AudioContextClass();
+    const originalArrayBuffer = await audioBlob.arrayBuffer();
+    const origBuffer = await tempCtx.decodeAudioData(originalArrayBuffer);
+    tempCtx.close();
+
+    const sampleRate = origBuffer.sampleRate || 24000;
+    const numChannels = Math.min(2, origBuffer.numberOfChannels || 1);
+
+    const cefrThreshold = parseInt(localStorage.getItem('audio_tutor_cefr_threshold') || '2');
+    const replayOriginal = localStorage.getItem('audio_tutor_replay_original') !== 'false';
+    const ttsRate = parseFloat(localStorage.getItem('audio_tutor_tts_rate') || '1.00');
+    const ttsEngine = localStorage.getItem('audio_tutor_tts_engine') || 'edge';
+    const ttsVoice = localStorage.getItem('audio_tutor_tts_voice') || (ttsEngine === 'edge' ? 'zh-TW-HsiaoChenNeural' : (ttsEngine === 'openai' ? 'nova' : ''));
+
+    const cefrLevels = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
+    const shouldExplain = (seg) => {
+      const idx = cefrLevels.indexOf(seg.cefr?.toUpperCase() || 'B1');
+      return idx >= cefrThreshold;
+    };
+
+    // Step 1: 預先批次合成所有 TTS 語音
+    const explainList = segments.filter(seg => shouldExplain(seg) && seg.explanation);
+    const ttsBuffers = new Map(); // seg -> AudioBuffer
+
+    if (ttsEngine !== 'system') {
+      const BATCH_SIZE = 4;
+      for (let i = 0; i < explainList.length; i += BATCH_SIZE) {
+        const batch = explainList.slice(i, i + BATCH_SIZE);
+        const pct = 5 + Math.round((i / explainList.length) * 60);
+        if (onProgress) onProgress(`正在合成 AI 導覽語音 (${i + 1}/${explainList.length} 句)...`, pct);
+
+        await Promise.all(batch.map(async (seg) => {
+          try {
+            const blob = await this.ttsService.synthesize(seg.explanation, {
+              engine: ttsEngine,
+              voice: ttsVoice,
+              rate: ttsRate
+            });
+            if (blob) {
+              const ab = await blob.arrayBuffer();
+              const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
+              const buf = await decodeCtx.decodeAudioData(ab);
+              decodeCtx.close();
+              ttsBuffers.set(seg, buf);
+            }
+          } catch (e) {
+            console.warn('TTS synthesis failed during export for sentence:', seg.text, e);
+          }
+        }));
+      }
+    }
+
+    if (onProgress) onProgress('正在組裝無縫精聽混音軌道...', 70);
+
+    // Step 2: 計算時間軸事件與總時長
+    const events = [];
+    let currentTime = 0.3; // 開頭 0.3 秒留白
+
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      const origStart = Math.max(0, Math.min(seg.start, origBuffer.duration - 0.05));
+      const origEnd = Math.max(origStart + 0.05, Math.min(seg.end, origBuffer.duration));
+      const sliceDur = origEnd - origStart;
+
+      // 1. 原句切片
+      events.push({
+        type: 'orig',
+        startOffset: origStart,
+        duration: sliceDur,
+        time: currentTime
+      });
+      currentTime += sliceDur + 0.25;
+
+      // 2. 語音講解
+      const ttsBuf = ttsBuffers.get(seg);
+      if (ttsBuf) {
+        events.push({
+          type: 'tts',
+          buffer: ttsBuf,
+          duration: ttsBuf.duration,
+          time: currentTime
+        });
+        currentTime += ttsBuf.duration + 0.3;
+
+        // 3. 重播原句
+        if (replayOriginal) {
+          events.push({
+            type: 'orig',
+            startOffset: origStart,
+            duration: sliceDur,
+            time: currentTime
+          });
+          currentTime += sliceDur + 0.45;
+        }
+      }
+    }
+
+    currentTime += 0.5; // 結尾留白
+
+    // Step 3: OfflineAudioContext 高速混音渲染
+    if (onProgress) onProgress('正在進行高音質無縫渲染...', 85);
+
+    const totalFrames = Math.ceil(currentTime * sampleRate);
+    const offlineCtx = new OfflineAudioContext(numChannels, totalFrames, sampleRate);
+
+    for (const ev of events) {
+      if (ev.type === 'orig') {
+        const src = offlineCtx.createBufferSource();
+        src.buffer = origBuffer;
+        const gain = offlineCtx.createGain();
+
+        // 25ms 平滑淡入淡出
+        const fade = Math.min(0.025, ev.duration / 4);
+        gain.gain.setValueAtTime(0.0001, ev.time);
+        gain.gain.exponentialRampToValueAtTime(1.0, ev.time + fade);
+        gain.gain.setValueAtTime(1.0, Math.max(ev.time + fade, ev.time + ev.duration - fade));
+        gain.gain.exponentialRampToValueAtTime(0.0001, ev.time + ev.duration);
+
+        src.connect(gain);
+        gain.connect(offlineCtx.destination);
+        src.start(ev.time, ev.startOffset, ev.duration);
+      } else if (ev.type === 'tts') {
+        const src = offlineCtx.createBufferSource();
+        src.buffer = ev.buffer;
+        const gain = offlineCtx.createGain();
+
+        const fade = Math.min(0.02, ev.duration / 4);
+        gain.gain.setValueAtTime(0.0001, ev.time);
+        gain.gain.exponentialRampToValueAtTime(1.0, ev.time + fade);
+        gain.gain.setValueAtTime(1.0, Math.max(ev.time + fade, ev.time + ev.duration - fade));
+        gain.gain.exponentialRampToValueAtTime(0.0001, ev.time + ev.duration);
+
+        src.connect(gain);
+        gain.connect(offlineCtx.destination);
+        src.start(ev.time, 0, ev.duration);
+      }
+    }
+
+    const renderedBuffer = await offlineCtx.startRendering();
+
+    if (onProgress) onProgress('正在封裝音訊檔案 (WAV)...', 95);
+
+    // Step 4: 封裝為標準 PCM WAV
+    return this._encodeAudioBufferToWav(renderedBuffer);
+  }
+
+  _encodeAudioBufferToWav(audioBuffer) {
+    const numChannels = audioBuffer.numberOfChannels;
+    const sampleRate = audioBuffer.sampleRate;
+    const length = audioBuffer.length * numChannels * 2;
+    const buffer = new ArrayBuffer(44 + length);
+    const view = new DataView(buffer);
+
+    const writeStr = (offset, str) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    };
+
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + length, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * numChannels * 2, true);
+    view.setUint16(32, numChannels * 2, true);
+    view.setUint16(34, 16, true); // 16-bit
+    writeStr(36, 'data');
+    view.setUint32(40, length, true);
+
+    const channels = [];
+    for (let c = 0; c < numChannels; c++) {
+      channels.push(audioBuffer.getChannelData(c));
+    }
+
+    let offset = 44;
+    for (let i = 0; i < audioBuffer.length; i++) {
+      for (let c = 0; c < numChannels; c++) {
+        let sample = channels[c][i];
+        sample = Math.max(-1, Math.min(1, sample));
+        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+        offset += 2;
+      }
+    }
+
+    return new Blob([view], { type: 'audio/wav' });
   }
   
   _escapeHtml(str) {
