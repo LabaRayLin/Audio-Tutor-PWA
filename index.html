@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Audio Tutor — 聽覺沉浸式學習</title>
-  <link rel="stylesheet" href="style.css?v=3.8">
+  <link rel="stylesheet" href="style.css?v=4.0">
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -180,10 +180,19 @@
             <div class="input-group">
               <label for="tts-engine">語音合成引擎 (TTS Engine)</label>
               <select id="tts-engine" class="select-input">
-                <option value="system" selected>💻 本機/瀏覽器系統語音 (零延遲免金鑰 · 支援 Google 國語 / 微軟 Natural)</option>
+                <option value="edge" selected>✨ Microsoft Edge-TTS (高擬真繁中曉臻 · 支援本機/免費 Cloudflare Worker)</option>
+                <option value="system">💻 本機/瀏覽器系統語音 (零延遲免金鑰 · 支援 Google 國語 / 微軟 Natural)</option>
                 <option value="openai">🤖 OpenAI TTS-1 (頂級真人級神經音質 · 需填 OpenAI Key)</option>
-                <option value="edge">✨ Microsoft Edge-TTS (高擬真繁中 · 需啟動本機 server.py)</option>
               </select>
+            </div>
+
+            <div id="edge-endpoint-group" class="input-group">
+              <label for="edge-endpoint-input">Edge-TTS 雲端代理端點 (Cloudflare Worker 網址 / 本機伺服器)</label>
+              <div class="input-with-btn">
+                <input type="text" id="edge-endpoint-input" class="text-input" placeholder="例如：https://my-edge-tts.yourname.workers.dev">
+                <button id="btn-save-edge-endpoint" class="btn-save" type="button">儲存</button>
+              </div>
+              <small class="hint-text">💡 <strong>在 GitHub Pages 上使用 Edge-TTS：</strong>至 Cloudflare 免費建立 Worker（專案內附 <code>cloudflare-edge-tts-worker.js</code>），將網址貼於此處即可全功能在線使用！</small>
             </div>
 
             <div class="input-group">
@@ -386,6 +395,6 @@
       </div>
     </div>
   </div>
-  <script src="app.js?v=3.8"></script>
+  <script src="app.js?v=4.0"></script>
 </body>
 </html>

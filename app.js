@@ -213,36 +213,40 @@ class NeuralTtsService {
     return audioBlob;
   }
 
-  async _synthesizeEdge(text, voice = 'zh-TW-HsiaoChenNeural', rate = 1.0) {
+  async _synthesizeEdge(text, voice = 'zh-TW-HsiaoChenNeural', rate = 1.1) {
     const ratePercent = Math.round((rate - 1.0) * 100);
     const rateStr = (ratePercent >= 0 ? `+${ratePercent}%` : `${ratePercent}%`);
 
-    // 優先使用純前端 WebSocket 直連微軟 Edge-TTS (零延遲、高頻寬)
-    try {
-      return await this._edgeWebSocket(text, voice, rateStr);
-    } catch (wsErr) {
-      console.warn('[Edge-TTS] WebSocket 連線失敗，嘗試本機 /api/tts 代理：', wsErr);
-    }
+    const customEndpoint = (localStorage.getItem('audio_tutor_edge_endpoint') || '').trim();
+    const candidateUrls = [];
 
-    // 備援方案 1：本機開發伺服器 /api/tts
-    try {
-      const res = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice, rate: rateStr })
-      });
-      if (res.ok) {
-        return await res.blob();
+    if (customEndpoint) {
+      // 支援使用者輸入完整 URL 或 Base URL
+      candidateUrls.push(customEndpoint);
+      if (!customEndpoint.endsWith('/api/tts') && !customEndpoint.endsWith('/tts') && !customEndpoint.endsWith('/v1/audio/speech')) {
+        candidateUrls.push(`${customEndpoint.replace(/\/+$/, '')}/api/tts`);
+        candidateUrls.push(`${customEndpoint.replace(/\/+$/, '')}/tts`);
       }
-    } catch (apiErr) {
-      console.warn('[Edge-TTS] 本機 API 請求失敗：', apiErr);
     }
 
-    // 備援方案 2：GET 方式
-    try {
-      const res = await fetch(`/api/tts?text=${encodeURIComponent(text)}&voice=${encodeURIComponent(voice)}&rate=${encodeURIComponent(rateStr)}`);
-      if (res.ok) return await res.blob();
-    } catch (e) {}
+    // 本機開發伺服器 /api/tts
+    candidateUrls.push('/api/tts');
+
+    for (const url of candidateUrls) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, voice, rate: rateStr, speed: rate, input: text })
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          if (blob && blob.size > 100) return blob;
+        }
+      } catch (err) {
+        console.warn(`[Edge-TTS] 嘗試端點 ${url} 失敗:`, err);
+      }
+    }
 
     return null;
   }
@@ -1893,9 +1897,21 @@ class UIController {
     if (ttsEngine) {
       ttsEngine.addEventListener('change', e => {
         localStorage.setItem('audio_tutor_tts_engine', e.target.value);
+        const edgeGroup = document.getElementById('edge-endpoint-group');
+        if (edgeGroup) edgeGroup.classList.toggle('hidden', e.target.value !== 'edge');
         this._populateVoices();
         const curVoice = document.getElementById('tts-voice')?.value;
         if (this.player) this.player.updateOptions({ ttsEngine: e.target.value, ttsVoice: curVoice });
+      });
+    }
+
+    // Edge-TTS 雲端端點儲存
+    const btnSaveEdgeEndpoint = document.getElementById('btn-save-edge-endpoint');
+    if (btnSaveEdgeEndpoint) {
+      btnSaveEdgeEndpoint.addEventListener('click', () => {
+        const val = document.getElementById('edge-endpoint-input')?.value.trim() || '';
+        localStorage.setItem('audio_tutor_edge_endpoint', val);
+        this._showToast(val ? '✅ Edge-TTS 雲端代理端點已儲存' : '⚠️ 已清除自訂 Edge-TTS 端點 (使用預設)');
       });
     }
 
@@ -2310,6 +2326,13 @@ class UIController {
     
     const replayEl = document.getElementById('toggle-replay');
     if (replayEl) replayEl.checked = replay;
+
+    const edgeEndpoint = localStorage.getItem('audio_tutor_edge_endpoint') || '';
+    const edgeEndpointInput = document.getElementById('edge-endpoint-input');
+    if (edgeEndpointInput) edgeEndpointInput.value = edgeEndpoint;
+
+    const edgeGroup = document.getElementById('edge-endpoint-group');
+    if (edgeGroup) edgeGroup.classList.toggle('hidden', engine !== 'edge');
 
     this._populateVoices();
   }
@@ -3027,7 +3050,12 @@ class UIController {
           await audio.play();
           return;
         } else {
-          this._showToast('⚠️ Edge-TTS 需要本機 server.py 支援。若在 GitHub Pages 上，請切換至「本機系統語音」或「OpenAI TTS」！', 'error');
+          const customEndpoint = (localStorage.getItem('audio_tutor_edge_endpoint') || '').trim();
+          if (!customEndpoint) {
+            this._showToast('💡 提示：在 GitHub Pages 上使用 Edge-TTS，請在下方「Edge-TTS 雲端代理端點」填入免費 Cloudflare Worker 網址！', 'error');
+          } else {
+            this._showToast(`❌ 無法連線至 Edge-TTS 代理端點 (${customEndpoint})，請檢查 Worker 網址是否正確。`, 'error');
+          }
           onFinish();
           return;
         }
