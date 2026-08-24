@@ -6,13 +6,15 @@ class ApiKeyManager {
   setGroqKey(key) { localStorage.setItem('audio_tutor_groq_key', (key || '').trim()); }
   getGeminiKey() { return (localStorage.getItem('audio_tutor_gemini_key') || '').trim(); }
   setGeminiKey(key) { localStorage.setItem('audio_tutor_gemini_key', (key || '').trim()); }
+  getOpenAIKey() { return (localStorage.getItem('audio_tutor_openai_key') || '').trim(); }
+  setOpenAIKey(key) { localStorage.setItem('audio_tutor_openai_key', (key || '').trim()); }
   hasAllKeys() { return !!this.getGroqKey() && !!this.getGeminiKey(); }
 }
 
 class StorageManager {
   constructor() { 
     this.dbName = 'AudioTutorDB'; 
-    this.dbVersion = 1; 
+    this.dbVersion = 2; 
   }
   
   async openDB() {
@@ -30,6 +32,9 @@ class StorageManager {
         }
         if (!db.objectStoreNames.contains('audioFallback')) {
           db.createObjectStore('audioFallback');
+        }
+        if (!db.objectStoreNames.contains('ttsCache')) {
+          db.createObjectStore('ttsCache');
         }
       };
     });
@@ -121,6 +126,252 @@ class StorageManager {
       });
     }
   }
+
+  async saveTtsCache(key, blob) {
+    try {
+      const db = await this.openDB();
+      return new Promise((resolve) => {
+        const transaction = db.transaction(['ttsCache'], 'readwrite');
+        const store = transaction.objectStore('ttsCache');
+        const request = store.put(blob, key);
+        request.onsuccess = () => resolve();
+        request.onerror = () => resolve();
+      });
+    } catch (e) {
+      console.warn('TTS Cache save failed:', e);
+    }
+  }
+
+  async loadTtsCache(key) {
+    try {
+      const db = await this.openDB();
+      return new Promise((resolve) => {
+        const transaction = db.transaction(['ttsCache'], 'readonly');
+        const store = transaction.objectStore('ttsCache');
+        const request = store.get(key);
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => resolve(null);
+      });
+    } catch (e) {
+      return null;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 雲端高擬真神經網路語音合成服務 (Edge-TTS / OpenAI / Web Speech)
+// ─────────────────────────────────────────────────────────────
+class NeuralTtsService {
+  constructor(apiKeys, storage) {
+    this.apiKeys = apiKeys;
+    this.storage = storage;
+    this.memCache = new Map();
+  }
+
+  _getCacheKey(text, engine, voice, rate) {
+    return `${engine}_${voice}_${rate}_${text}`;
+  }
+
+  async synthesize(text, options = {}) {
+    if (!text || !text.trim()) return null;
+    const cleanText = text.trim();
+    const engine = options.engine || 'edge';
+    const voice = options.voice || 'zh-TW-HsiaoChenNeural';
+    const rate = options.rate || 1.0;
+
+    const cacheKey = this._getCacheKey(cleanText, engine, voice, rate);
+
+    // 1. 記憶體快取
+    if (this.memCache.has(cacheKey)) {
+      return this.memCache.get(cacheKey);
+    }
+
+    // 2. IndexedDB 快取
+    if (this.storage) {
+      const cachedBlob = await this.storage.loadTtsCache(cacheKey);
+      if (cachedBlob) {
+        this.memCache.set(cacheKey, cachedBlob);
+        return cachedBlob;
+      }
+    }
+
+    let audioBlob = null;
+
+    if (engine === 'openai') {
+      audioBlob = await this._synthesizeOpenAI(cleanText, voice, rate);
+    } else if (engine === 'edge') {
+      audioBlob = await this._synthesizeEdge(cleanText, voice, rate);
+    }
+
+    if (audioBlob) {
+      this.memCache.set(cacheKey, audioBlob);
+      if (this.storage) {
+        this.storage.saveTtsCache(cacheKey, audioBlob).catch(() => {});
+      }
+    }
+
+    return audioBlob;
+  }
+
+  async _synthesizeEdge(text, voice = 'zh-TW-HsiaoChenNeural', rate = 1.0) {
+    const ratePercent = Math.round((rate - 1.0) * 100);
+    const rateStr = (ratePercent >= 0 ? `+${ratePercent}%` : `${ratePercent}%`);
+
+    // 優先使用純前端 WebSocket 直連微軟 Edge-TTS (零延遲、高頻寬)
+    try {
+      return await this._edgeWebSocket(text, voice, rateStr);
+    } catch (wsErr) {
+      console.warn('[Edge-TTS] WebSocket 連線失敗，嘗試本機 /api/tts 代理：', wsErr);
+    }
+
+    // 備援方案 1：本機開發伺服器 /api/tts
+    try {
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice, rate: rateStr })
+      });
+      if (res.ok) {
+        return await res.blob();
+      }
+    } catch (apiErr) {
+      console.warn('[Edge-TTS] 本機 API 請求失敗：', apiErr);
+    }
+
+    // 備援方案 2：GET 方式
+    try {
+      const res = await fetch(`/api/tts?text=${encodeURIComponent(text)}&voice=${encodeURIComponent(voice)}&rate=${encodeURIComponent(rateStr)}`);
+      if (res.ok) return await res.blob();
+    } catch (e) {}
+
+    return null;
+  }
+
+  _edgeWebSocket(text, voice, rateStr) {
+    return new Promise((resolve, reject) => {
+      const connId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+      const reqId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+      const wsUrl = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EA651143B48DA8F676841211&ConnectionId=${connId}`;
+
+      let ws;
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (e) {
+        reject(e);
+        return;
+      }
+      
+      ws.binaryType = 'arraybuffer';
+      const audioParts = [];
+      let isDone = false;
+
+      const timer = setTimeout(() => {
+        if (!isDone) {
+          try { ws.close(); } catch(e){}
+          reject(new Error('Edge-TTS 連線超時'));
+        }
+      }, 10000);
+
+      ws.onopen = () => {
+        // 1. 發送環境設定
+        const configMsg = "Content-Type:application/json;charset=utf-8\r\nPath:speech.config\r\n\r\n" +
+          JSON.stringify({
+            context: {
+              synthesis: {
+                audio: {
+                  metadataoptions: { sentenceBoundaryEnabled: "false", wordBoundaryEnabled: "false" },
+                  outputFormat: "audio-24khz-48kbitrate-mono-mp3"
+                }
+              }
+            }
+          });
+        ws.send(configMsg);
+
+        // 2. 發送 SSML 朗讀請求
+        const cleanText = text
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&apos;');
+        const dateStr = new Date().toUTCString();
+        const ssmlMsg = `X-RequestId:${reqId}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${dateStr}\r\nPath:ssml\r\n\r\n` +
+          `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-TW'>` +
+          `<voice name='${voice}'><prosody pitch='+0Hz' rate='${rateStr}'>${cleanText}</prosody></voice>` +
+          `</speak>`;
+        ws.send(ssmlMsg);
+      };
+
+      ws.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+          if (event.data.includes('Path:turn.end')) {
+            isDone = true;
+            clearTimeout(timer);
+            try { ws.close(); } catch(e){}
+            resolve(new Blob(audioParts, { type: 'audio/mpeg' }));
+          }
+        } else if (event.data instanceof ArrayBuffer) {
+          const dv = new DataView(event.data);
+          if (event.data.byteLength >= 2) {
+            const headerLen = dv.getUint16(0);
+            if (event.data.byteLength >= 2 + headerLen) {
+              const headerBytes = new Uint8Array(event.data, 2, headerLen);
+              const headerStr = new TextDecoder().decode(headerBytes);
+              if (headerStr.includes('Path:audio')) {
+                const audioBytes = event.data.slice(2 + headerLen);
+                if (audioBytes.byteLength > 0) {
+                  audioParts.push(audioBytes);
+                }
+              }
+            }
+          }
+        }
+      };
+
+      ws.onerror = (err) => {
+        if (!isDone) {
+          clearTimeout(timer);
+          reject(err);
+        }
+      };
+
+      ws.onclose = () => {
+        clearTimeout(timer);
+        if (!isDone && audioParts.length > 0) {
+          isDone = true;
+          resolve(new Blob(audioParts, { type: 'audio/mpeg' }));
+        }
+      };
+    });
+  }
+
+  async _synthesizeOpenAI(text, voice = 'nova', rate = 1.0) {
+    const apiKey = this.apiKeys.getOpenAIKey();
+    if (!apiKey) {
+      throw new Error('未填寫 OpenAI API Key');
+    }
+
+    const res = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'tts-1',
+        input: text,
+        voice: voice || 'nova',
+        speed: Math.max(0.75, Math.min(1.5, rate))
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`OpenAI TTS 失敗 (${res.status}): ${err}`);
+    }
+
+    return await res.blob();
+  }
 }
 
 class AudioPipeline {
@@ -162,34 +413,183 @@ class AudioPipeline {
   }
   
   async transcribe(audioBlob, language = 'en') {
-    this.onProgress('transcribe', 0, '準備音訊...');
+    this.onProgress('transcribe', 0, '準備音訊中...');
     
     const chunks = await this._prepareAudioChunks(audioBlob);
-    this.onProgress('transcribe', 20, `已切分 ${chunks.length} 段`);
+    this.onProgress('transcribe', 15, `已切分 ${chunks.length} 段音訊`);
     
+    let allWords = [];
     let allSegments = [];
+
     for (let i = 0; i < chunks.length; i++) {
-      this.onProgress('transcribe', 20 + Math.round((i / chunks.length) * 70), `辨識第 ${i+1}/${chunks.length} 段...`);
+      this.onProgress('transcribe', 15 + Math.round((i / chunks.length) * 75), `辨識第 ${i+1}/${chunks.length} 段（單字級時間軸）...`);
       const result = await this._transcribeChunk(chunks[i].blob, language);
+      const timeOffset = chunks[i].timeOffset;
       
-      if (result && result.segments) {
+      // 收集 Word-Level 時間軸
+      if (result && Array.isArray(result.words)) {
+        for (const w of result.words) {
+          if (w.word && w.word.trim()) {
+            allWords.push({
+              word: w.word,
+              start: +(Number(w.start || 0) + timeOffset).toFixed(3),
+              end: +(Number(w.end || 0) + timeOffset).toFixed(3)
+            });
+          }
+        }
+      }
+
+      // 收集 Segment-Level 備用
+      if (result && Array.isArray(result.segments)) {
         for (const seg of result.segments) {
           allSegments.push({
-            start: +(Number(seg.start || 0) + chunks[i].timeOffset).toFixed(3),
-            end: +(Number(seg.end || 0) + chunks[i].timeOffset).toFixed(3),
+            start: +(Number(seg.start || 0) + timeOffset).toFixed(3),
+            end: +(Number(seg.end || 0) + timeOffset).toFixed(3),
             text: (seg.text || '').trim()
           });
         }
       }
     }
     
-    allSegments = allSegments.filter(s => s.text.length > 0);
-    this.onProgress('transcribe', 100, `辨識完成，共 ${allSegments.length} 句`);
-    return allSegments;
+    this.onProgress('transcribe', 92, '正在進行語意級標點斷句平滑化...');
+    
+    // 智慧語意斷句聚合
+    let finalSentences = this._resegmentWords(allWords, allSegments);
+    finalSentences = finalSentences.filter(s => s.text.length > 0);
+
+    this.onProgress('transcribe', 100, `辨識完成，共重組 ${finalSentences.length} 句完整語音`);
+    return finalSentences;
+  }
+
+  /**
+   * 智慧語意斷句聚合器 (Semantic Re-segmentation)
+   * 根據英語/多國語言文法標點（. ? ! 。 ？！）與縮寫白名單，將單字組合成完整的語音句子
+   */
+  _resegmentWords(words, fallbackSegments) {
+    if (!words || words.length === 0) {
+      return this._mergeSegmentsByPunctuation(fallbackSegments);
+    }
+
+    const ABBREVIATIONS = new Set([
+      'mr.', 'mrs.', 'ms.', 'dr.', 'prof.', 'sr.', 'jr.', 'st.',
+      'vs.', 'etc.', 'e.g.', 'i.e.', 'u.s.', 'u.k.', 'a.m.', 'p.m.',
+      'jan.', 'feb.', 'mar.', 'apr.', 'jun.', 'jul.', 'aug.', 'sept.', 'oct.', 'nov.', 'dec.'
+    ]);
+
+    const isSentenceEnd = (w, nextW) => {
+      const trimmed = w.trim();
+      if (!trimmed) return false;
+      
+      // 標點結尾檢查
+      const match = trimmed.match(/[.!?。？！]["')\]}]*$/);
+      if (!match) return false;
+
+      // 縮寫詞豁免
+      const lowerClean = trimmed.toLowerCase().replace(/["')\]}]*$/, '');
+      if (ABBREVIATIONS.has(lowerClean)) {
+        return false;
+      }
+
+      // 數字小數點豁免 (如 3.14)
+      if (/\d+\.\d*$/.test(trimmed) && nextW && /^\d+/.test(nextW.word.trim())) {
+        return false;
+      }
+
+      return true;
+    };
+
+    const sentences = [];
+    let currentWords = [];
+
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      const nextW = i < words.length - 1 ? words[i + 1] : null;
+      currentWords.push(w);
+
+      const dur = currentWords[currentWords.length - 1].end - currentWords[0].start;
+      const isPunctEnd = isSentenceEnd(w.word, nextW);
+      
+      // 語音停頓檢測：若單字間距超過 0.65 秒且長度充足，適度切句
+      const hasLongPause = nextW && (nextW.start - w.end > 0.65) && dur >= 1.5;
+
+      // 超長句子保護：若無句號超過 14 秒，在逗號或停頓處斷開
+      const isOverlong = dur > 12 && (w.word.includes(',') || w.word.includes(';') || (nextW && nextW.start - w.end > 0.35));
+
+      if (isPunctEnd || hasLongPause || isOverlong || i === words.length - 1) {
+        if (currentWords.length > 0) {
+          // 拼接文字並優化英文標點間隔
+          let text = '';
+          for (let j = 0; j < currentWords.length; j++) {
+            const raw = currentWords[j].word;
+            if (j === 0) {
+              text += raw.trim();
+            } else {
+              if (/^[.,!?;:%)\]'"}。，！？；：）】]/.test(raw.trim())) {
+                text += raw.trim();
+              } else if (text.endsWith('(') || text.endsWith('[') || text.endsWith('{')) {
+                text += raw.trim();
+              } else {
+                text += ' ' + raw.trim();
+              }
+            }
+          }
+
+          const startRaw = currentWords[0].start;
+          const endRaw = currentWords[currentWords.length - 1].end;
+
+          // 微擴展邊界：前置 0.04s + 後置 0.08s（避免吃字或首尾子音截斷）
+          const start = +(Math.max(0, startRaw - 0.04)).toFixed(3);
+          const end = +(endRaw + 0.08).toFixed(3);
+
+          if (text.trim().length > 0) {
+            sentences.push({
+              start,
+              end,
+              text: text.trim()
+            });
+          }
+          currentWords = [];
+        }
+      }
+    }
+
+    return sentences.length > 0 ? sentences : fallbackSegments;
+  }
+
+  _mergeSegmentsByPunctuation(segments) {
+    if (!segments || segments.length === 0) return [];
+    const merged = [];
+    let cur = null;
+
+    for (const seg of segments) {
+      if (!cur) {
+        cur = { start: seg.start, end: seg.end, text: seg.text };
+      } else {
+        cur.end = seg.end;
+        cur.text += ' ' + seg.text;
+      }
+
+      if (/[.!?。？！]$/.test(seg.text.trim()) || (cur.end - cur.start > 12)) {
+        merged.push({
+          start: +(Math.max(0, cur.start - 0.04)).toFixed(3),
+          end: +(cur.end + 0.08).toFixed(3),
+          text: cur.text.trim()
+        });
+        cur = null;
+      }
+    }
+    if (cur) {
+      merged.push({
+        start: +(Math.max(0, cur.start - 0.04)).toFixed(3),
+        end: +(cur.end + 0.08).toFixed(3),
+        text: cur.text.trim()
+      });
+    }
+    return merged;
   }
   
   async _prepareAudioChunks(audioBlob) {
-    const CHUNK_DURATION = 600;
+    const CHUNK_DURATION = 600; // 10 分鐘
     try {
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       const arrayBuffer = await audioBlob.arrayBuffer();
@@ -256,6 +656,7 @@ class AudioPipeline {
     formData.append('file', chunkBlob, 'audio.wav');
     formData.append('model', 'whisper-large-v3');
     formData.append('response_format', 'verbose_json');
+    formData.append('timestamp_granularities[]', 'word');
     formData.append('timestamp_granularities[]', 'segment');
     if (language) {
       formData.append('language', language);
@@ -435,27 +836,50 @@ ${JSON.stringify(sentences)}
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// Web Audio API 高精準播放引擎 (AudioBuffer + Micro Fade Envelope)
+// ─────────────────────────────────────────────────────────────
 class AudioTutorPlayer {
-  constructor(audioBlob, enrichedSegments, options = {}) {
-    this.audioUrl = URL.createObjectURL(audioBlob);
-    this.audio = new Audio(this.audioUrl);
-    this.audio.preload = 'auto';
+  constructor(audioBlob, enrichedSegments, ttsService, options = {}) {
+    this.audioBlob = audioBlob;
     this.timeline = enrichedSegments;
+    this.ttsService = ttsService;
     this.currentIndex = 0;
-    this.state = 'idle';
-    this.tts = window.speechSynthesis;
+    this.state = 'idle'; // 'idle' | 'playing_original' | 'speaking_explanation' | 'replaying_original' | 'paused'
+    
     this.options = {
       replayOriginal: options.replayOriginal !== false,
-      ttsRate: options.ttsRate || 1.05,
-      ttsVoice: options.ttsVoice || null,
-      cefrThreshold: options.cefrThreshold || 0,
+      ttsEngine: options.ttsEngine || 'edge',
+      ttsVoice: options.ttsVoice || 'zh-TW-HsiaoChenNeural',
+      ttsRate: options.ttsRate || 1.0,
+      cefrThreshold: options.cefrThreshold !== undefined ? options.cefrThreshold : 2,
       ...options
     };
     this.onStateChange = options.onStateChange || (() => {});
     this.onSegmentChange = options.onSegmentChange || (() => {});
-    this._abortController = null;
+    
+    this.audioCtx = null;
+    this.audioBuffer = null;
+    this.currentSourceNode = null;
+    this.currentGainNode = null;
+
     this._paused = false;
     this._pauseResolve = null;
+    this._isStopped = false;
+    this._playLoopActive = false;
+
+    this._initAudioBuffer();
+  }
+
+  async _initAudioBuffer() {
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      this.audioCtx = new AudioContextClass();
+      const arrayBuffer = await this.audioBlob.arrayBuffer();
+      this.audioBuffer = await this.audioCtx.decodeAudioData(arrayBuffer);
+    } catch (e) {
+      console.warn('[AudioTutorPlayer] Web Audio 解碼失敗：', e);
+    }
   }
   
   get cefrLevels() { return ['A1','A2','B1','B2','C1','C2']; }
@@ -474,50 +898,64 @@ class AudioTutorPlayer {
       return;
     }
     this._paused = false;
-    this._playLoop();
+    this._isStopped = false;
+    if (!this._playLoopActive) {
+      this._playLoop();
+    }
   }
   
   async _playLoop() {
-    while (this.currentIndex < this.timeline.length) {
+    this._playLoopActive = true;
+
+    while (this.currentIndex < this.timeline.length && !this._isStopped) {
       if (this._paused) { await this._waitForResume(); }
+      if (this._isStopped) break;
       
       const seg = this.timeline[this.currentIndex];
       this.onSegmentChange(this.currentIndex, seg);
       
-      // 1. Play original audio slice
+      // 1. 播放原文音訊切片 (Web Audio 毫秒級精準切片 + 淡入淡出)
       this._setState('playing_original');
       await this._playSlice(seg.start, seg.end);
       
       if (this._paused) { await this._waitForResume(); }
+      if (this._isStopped) break;
       
-      // 2. Speak TTS explanation
+      // 2. 朗讀神經網路語音講解
       if (this.shouldExplain(seg) && seg.explanation) {
         this._setState('speaking_explanation');
         await this._speak(seg.explanation, 'zh-TW');
         
         if (this._paused) { await this._waitForResume(); }
+        if (this._isStopped) break;
         
-        // 3. Optionally replay original
+        // 3. 重播原文
         if (this.options.replayOriginal) {
           this._setState('replaying_original');
           await this._playSlice(seg.start, seg.end);
         }
       }
       
+      if (this._isStopped) break;
       this.currentIndex++;
     }
-    this._setState('idle');
+
+    this._playLoopActive = false;
+    if (!this._paused) {
+      this._setState('idle');
+    }
   }
   
   pause() {
     this._paused = true;
-    this.audio.pause();
-    this.tts.cancel();
+    this._stopCurrentNode();
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
     this._setState('paused');
   }
   
   _resume() {
     this._paused = false;
+    this._setState('playing_original');
     if (this._pauseResolve) {
       this._pauseResolve();
       this._pauseResolve = null;
@@ -527,21 +965,34 @@ class AudioTutorPlayer {
   _waitForResume() {
     return new Promise(resolve => { this._pauseResolve = resolve; });
   }
+
+  _stopCurrentNode() {
+    if (this.currentSourceNode) {
+      try { this.currentSourceNode.stop(); } catch(e){}
+      this.currentSourceNode = null;
+    }
+    if (this.currentGainNode) {
+      try { this.currentGainNode.disconnect(); } catch(e){}
+      this.currentGainNode = null;
+    }
+  }
   
   async replayCurrent() {
-    this.tts.cancel();
-    this.audio.pause();
+    this._stopCurrentNode();
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
     this._paused = false;
     if (this._pauseResolve) {
       this._pauseResolve();
       this._pauseResolve = null;
     }
-    this._playLoop();
+    if (!this._playLoopActive) {
+      this._playLoop();
+    }
   }
   
   async skipToNext() {
-    this.tts.cancel();
-    this.audio.pause();
+    this._stopCurrentNode();
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
     this._paused = false;
     if (this._pauseResolve) {
       this._pauseResolve();
@@ -550,12 +1001,14 @@ class AudioTutorPlayer {
     if (this.currentIndex < this.timeline.length - 1) {
       this.currentIndex++;
     }
-    this._playLoop();
+    if (!this._playLoopActive) {
+      this._playLoop();
+    }
   }
   
   async skipToPrev() {
-    this.tts.cancel();
-    this.audio.pause();
+    this._stopCurrentNode();
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
     this._paused = false;
     if (this._pauseResolve) {
       this._pauseResolve();
@@ -564,7 +1017,9 @@ class AudioTutorPlayer {
     if (this.currentIndex > 0) {
       this.currentIndex--;
     }
-    this._playLoop();
+    if (!this._playLoopActive) {
+      this._playLoop();
+    }
   }
   
   _setState(state) {
@@ -572,46 +1027,155 @@ class AudioTutorPlayer {
     this.onStateChange(state, this.currentIndex);
   }
   
-  _playSlice(start, end) {
+  /**
+   * Web Audio API 精準切片播放 (含 30ms Micro Fade-in/out 包絡線)
+   */
+  async _playSlice(start, end) {
+    if (!this.audioBuffer || !this.audioCtx) {
+      await this._initAudioBuffer();
+    }
+    if (!this.audioBuffer || !this.audioCtx) return;
+
+    if (this.audioCtx.state === 'suspended') {
+      await this.audioCtx.resume();
+    }
+
     return new Promise((resolve) => {
-      this.audio.currentTime = start;
-      this.audio.play().catch(resolve);
-      const onTimeUpdate = () => {
-        if (this._paused) {
-          this.audio.removeEventListener('timeupdate', onTimeUpdate);
-          resolve();
-          return;
-        }
-        if (this.audio.currentTime >= end) {
-          this.audio.pause();
-          this.audio.removeEventListener('timeupdate', onTimeUpdate);
-          resolve();
-        }
-      };
-      this.audio.addEventListener('timeupdate', onTimeUpdate);
-      const maxDur = (end - start + 2) * 1000;
-      setTimeout(() => {
-        this.audio.removeEventListener('timeupdate', onTimeUpdate);
-        this.audio.pause();
+      const totalDur = this.audioBuffer.duration;
+      const validStart = Math.max(0, Math.min(start, totalDur - 0.05));
+      const validEnd = Math.max(validStart + 0.05, Math.min(end, totalDur));
+      const dur = validEnd - validStart;
+
+      const source = this.audioCtx.createBufferSource();
+      source.buffer = this.audioBuffer;
+      const gainNode = this.audioCtx.createGain();
+
+      const now = this.audioCtx.currentTime;
+      const fadeDur = Math.min(0.035, dur / 4);
+
+      // Micro Fade-in & Fade-out 消除接縫與雜音
+      gainNode.gain.setValueAtTime(0.0001, now);
+      gainNode.gain.exponentialRampToValueAtTime(1.0, now + fadeDur);
+      gainNode.gain.setValueAtTime(1.0, Math.max(now + fadeDur, now + dur - fadeDur));
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+      source.connect(gainNode);
+      gainNode.connect(this.audioCtx.destination);
+
+      this.currentSourceNode = source;
+      this.currentGainNode = gainNode;
+
+      let timer = null;
+      let resolved = false;
+
+      const finish = () => {
+        if (resolved) return;
+        resolved = true;
+        if (timer) clearTimeout(timer);
+        try { source.stop(); } catch(e){}
+        source.disconnect();
+        gainNode.disconnect();
+        if (this.currentSourceNode === source) this.currentSourceNode = null;
+        if (this.currentGainNode === gainNode) this.currentGainNode = null;
         resolve();
-      }, maxDur);
+      };
+
+      source.onended = finish;
+      source.start(now, validStart, dur);
+      timer = setTimeout(finish, (dur + 0.2) * 1000);
     });
   }
   
-  _speak(text, lang = 'zh-TW') {
+  /**
+   * 播放語音講解 (神經網路 TTS 優先，失敗則降級 Web Speech API)
+   */
+  async _speak(text, lang = 'zh-TW') {
+    if (!text || !text.trim()) return;
+
+    // 1. 嘗試神經網路 TTS 引擎 (Edge-TTS 或 OpenAI)
+    if (this.options.ttsEngine !== 'system' && this.ttsService) {
+      try {
+        const audioBlob = await this.ttsService.synthesize(text, {
+          engine: this.options.ttsEngine,
+          voice: this.options.ttsVoice,
+          rate: this.options.ttsRate
+        });
+
+        if (audioBlob) {
+          const arrayBuffer = await audioBlob.arrayBuffer();
+          if (!this.audioCtx) {
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            this.audioCtx = new AudioContextClass();
+          }
+          const ttsBuffer = await this.audioCtx.decodeAudioData(arrayBuffer);
+          await this._playBuffer(ttsBuffer);
+          return;
+        }
+      } catch (e) {
+        console.warn('[Player] 雲端神經網路 TTS 播放異常，切換至本機語音：', e);
+      }
+    }
+
+    // 2. 降級至 Web Speech API
     return new Promise((resolve) => {
-      if (!text) { resolve(); return; }
+      if (!window.speechSynthesis) { resolve(); return; }
       const utter = new SpeechSynthesisUtterance(text);
       utter.lang = lang;
-      utter.rate = this.options.ttsRate;
-      if (this.options.ttsVoice) {
-        const voices = this.tts.getVoices();
+      utter.rate = this.options.ttsRate || 1.0;
+      if (this.options.ttsVoice && this.options.ttsEngine === 'system') {
+        const voices = window.speechSynthesis.getVoices();
         const v = voices.find(v => v.name === this.options.ttsVoice);
         if (v) utter.voice = v;
       }
       utter.onend = resolve;
       utter.onerror = resolve;
-      this.tts.speak(utter);
+      window.speechSynthesis.speak(utter);
+    });
+  }
+
+  _playBuffer(buffer) {
+    return new Promise((resolve) => {
+      if (!this.audioCtx || !buffer) { resolve(); return; }
+      if (this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume();
+      }
+
+      const now = this.audioCtx.currentTime;
+      const dur = buffer.duration;
+      const source = this.audioCtx.createBufferSource();
+      source.buffer = buffer;
+      const gainNode = this.audioCtx.createGain();
+
+      const fadeDur = Math.min(0.02, dur / 4);
+      gainNode.gain.setValueAtTime(0.0001, now);
+      gainNode.gain.exponentialRampToValueAtTime(1.0, now + fadeDur);
+      gainNode.gain.setValueAtTime(1.0, Math.max(now + fadeDur, now + dur - fadeDur));
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+      source.connect(gainNode);
+      gainNode.connect(this.audioCtx.destination);
+
+      this.currentSourceNode = source;
+      this.currentGainNode = gainNode;
+
+      let timer = null;
+      let resolved = false;
+
+      const finish = () => {
+        if (resolved) return;
+        resolved = true;
+        if (timer) clearTimeout(timer);
+        try { source.stop(); } catch(e){}
+        source.disconnect();
+        gainNode.disconnect();
+        if (this.currentSourceNode === source) this.currentSourceNode = null;
+        if (this.currentGainNode === gainNode) this.currentGainNode = null;
+        resolve();
+      };
+
+      source.onended = finish;
+      source.start(now, 0, dur);
+      timer = setTimeout(finish, (dur + 0.2) * 1000);
     });
   }
   
@@ -620,9 +1184,12 @@ class AudioTutorPlayer {
   }
   
   destroy() {
-    this.audio.pause();
-    this.tts.cancel();
-    URL.revokeObjectURL(this.audioUrl);
+    this._isStopped = true;
+    this._stopCurrentNode();
+    if (this.audioCtx) {
+      try { this.audioCtx.close(); } catch(e){}
+    }
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
   }
   
   setupMediaSession(fileName) {
@@ -1017,6 +1584,7 @@ class UIController {
   constructor() {
     this.apiKeys = new ApiKeyManager();
     this.storage = new StorageManager();
+    this.ttsService = new NeuralTtsService(this.apiKeys, this.storage);
     this.podcasts = new PodcastManager();
     this.player = null;
     this.currentSession = null;
@@ -1189,7 +1757,47 @@ class UIController {
         this._showToast(val ? '✅ Gemini API Key 已儲存' : '⚠️ Gemini API Key 已清除');
       });
     }
+
+    const btnSaveOpenAI = document.getElementById('btn-save-openai');
+    if (btnSaveOpenAI) {
+      btnSaveOpenAI.addEventListener('click', () => {
+        const val = document.getElementById('openai-key-input')?.value || '';
+        this.apiKeys.setOpenAIKey(val);
+        this._showToast(val ? '✅ OpenAI API Key 已儲存' : '⚠️ OpenAI API Key 已清除');
+      });
+    }
+
+    // TTS 引擎切換
+    const ttsEngine = document.getElementById('tts-engine');
+    if (ttsEngine) {
+      ttsEngine.addEventListener('change', e => {
+        localStorage.setItem('audio_tutor_tts_engine', e.target.value);
+        this._populateVoices();
+        const curVoice = document.getElementById('tts-voice')?.value;
+        if (this.player) this.player.updateOptions({ ttsEngine: e.target.value, ttsVoice: curVoice });
+      });
+    }
+
+    // TTS 語音選擇
+    const ttsVoice = document.getElementById('tts-voice');
+    if (ttsVoice) {
+      ttsVoice.addEventListener('change', e => {
+        localStorage.setItem('audio_tutor_tts_voice', e.target.value);
+        if (this.player) this.player.updateOptions({ ttsVoice: e.target.value });
+      });
+    }
     
+    // TTS 語速
+    const ttsRate = document.getElementById('tts-rate');
+    if (ttsRate) {
+      const ttsRateLabel = document.getElementById('tts-rate-label');
+      ttsRate.addEventListener('input', e => {
+        if (ttsRateLabel) ttsRateLabel.textContent = parseFloat(e.target.value).toFixed(2);
+        localStorage.setItem('audio_tutor_tts_rate', e.target.value);
+        if (this.player) this.player.updateOptions({ ttsRate: parseFloat(e.target.value) });
+      });
+    }
+
     // CEFR 滑桿
     const cefrSlider = document.getElementById('cefr-slider');
     if (cefrSlider) {
@@ -1203,32 +1811,12 @@ class UIController {
       });
     }
     
-    // TTS 速度
-    const ttsRate = document.getElementById('tts-rate');
-    if (ttsRate) {
-      const ttsRateLabel = document.getElementById('tts-rate-label');
-      ttsRate.addEventListener('input', e => {
-        if (ttsRateLabel) ttsRateLabel.textContent = parseFloat(e.target.value).toFixed(2);
-        localStorage.setItem('audio_tutor_tts_rate', e.target.value);
-        if (this.player) this.player.updateOptions({ ttsRate: parseFloat(e.target.value) });
-      });
-    }
-    
     // 重播切換
     const toggleReplay = document.getElementById('toggle-replay');
     if (toggleReplay) {
       toggleReplay.addEventListener('change', e => {
         localStorage.setItem('audio_tutor_replay_original', e.target.checked);
         if (this.player) this.player.updateOptions({ replayOriginal: e.target.checked });
-      });
-    }
-    
-    // TTS 語音選擇
-    const ttsVoice = document.getElementById('tts-voice');
-    if (ttsVoice) {
-      ttsVoice.addEventListener('change', e => {
-        localStorage.setItem('audio_tutor_tts_voice', e.target.value);
-        if (this.player) this.player.updateOptions({ ttsVoice: e.target.value || null });
       });
     }
     
@@ -1558,8 +2146,10 @@ class UIController {
   _loadSettings() {
     const groqKey = this.apiKeys.getGroqKey();
     const geminiKey = this.apiKeys.getGeminiKey();
+    const openaiKey = this.apiKeys.getOpenAIKey();
     const lang = localStorage.getItem('audio_tutor_source_lang') || 'en';
-    const rate = localStorage.getItem('audio_tutor_tts_rate') || '1.05';
+    const rate = localStorage.getItem('audio_tutor_tts_rate') || '1.00';
+    const engine = localStorage.getItem('audio_tutor_tts_engine') || 'edge';
     const cefr = localStorage.getItem('audio_tutor_cefr_threshold') || '2';  // 預設 B1 (index 2)
     const replay = localStorage.getItem('audio_tutor_replay_original') !== 'false';
     
@@ -1568,6 +2158,12 @@ class UIController {
 
     const geminiInput = document.getElementById('gemini-key-input');
     if (geminiInput) geminiInput.value = geminiKey;
+
+    const openaiInput = document.getElementById('openai-key-input');
+    if (openaiInput) openaiInput.value = openaiKey;
+
+    const engineEl = document.getElementById('tts-engine');
+    if (engineEl) engineEl.value = engine;
 
     const langEl = document.getElementById('source-lang');
     if (langEl) langEl.value = lang;
@@ -1587,25 +2183,66 @@ class UIController {
     
     const replayEl = document.getElementById('toggle-replay');
     if (replayEl) replayEl.checked = replay;
+
+    this._populateVoices();
   }
   
   _populateVoices() {
-    if (!window.speechSynthesis) return;
-    const voices = window.speechSynthesis.getVoices();
     const select = document.getElementById('tts-voice');
-    if (!select || voices.length === 0) return;
+    const engine = document.getElementById('tts-engine')?.value || localStorage.getItem('audio_tutor_tts_engine') || 'edge';
+    if (!select) return;
     
     const savedVoice = localStorage.getItem('audio_tutor_tts_voice');
-    select.innerHTML = '<option value="">系統預設繁中語音</option>';
+    select.innerHTML = '';
     
-    const zhVoices = voices.filter(v => v.lang.startsWith('zh'));
-    zhVoices.forEach(v => {
-      const option = document.createElement('option');
-      option.value = v.name;
-      option.textContent = `${v.name} (${v.lang})`;
-      if (savedVoice === v.name) option.selected = true;
-      select.appendChild(option);
-    });
+    if (engine === 'edge') {
+      const edgeVoices = [
+        { id: 'zh-TW-HsiaoChenNeural', name: '🇹🇼 臺灣曉臻 (溫暖自然 · 精聽推薦)' },
+        { id: 'zh-TW-YunJheNeural', name: '🇹🇼 臺灣雲哲 (清晰穩重男聲)' },
+        { id: 'zh-TW-HsiaoYuNeural', name: '🇹🇼 臺灣曉雨 (清新活潑女聲)' },
+        { id: 'zh-CN-XiaoxiaoNeural', name: '🇨🇳 曉曉 (自然導覽女聲)' },
+        { id: 'zh-CN-YunxiNeural', name: '🇨🇳 雲希 (生動流暢男聲)' },
+      ];
+      edgeVoices.forEach(v => {
+        const option = document.createElement('option');
+        option.value = v.id;
+        option.textContent = v.name;
+        if (savedVoice === v.id || (!savedVoice && v.id === 'zh-TW-HsiaoChenNeural')) option.selected = true;
+        select.appendChild(option);
+      });
+    } else if (engine === 'openai') {
+      const openAiVoices = [
+        { id: 'nova', name: '✨ Nova (自然親切女聲 · 推薦)' },
+        { id: 'alloy', name: '🎙️ Alloy (通用平衡音)' },
+        { id: 'shimmer', name: '🌸 Shimmer (溫柔清亮女聲)' },
+        { id: 'echo', name: '🎧 Echo (穩重磁性男聲)' },
+        { id: 'fable', name: '📖 Fable (生動敘事音)' },
+        { id: 'onyx', name: '💼 Onyx (深沉專業男聲)' }
+      ];
+      openAiVoices.forEach(v => {
+        const option = document.createElement('option');
+        option.value = v.id;
+        option.textContent = v.name;
+        if (savedVoice === v.id || (!savedVoice && v.id === 'nova')) option.selected = true;
+        select.appendChild(option);
+      });
+    } else {
+      // System voices
+      if (!window.speechSynthesis) {
+        select.innerHTML = '<option value="">裝置不支援 Web Speech API</option>';
+        return;
+      }
+      const voices = window.speechSynthesis.getVoices();
+      select.innerHTML = '<option value="">系統預設繁中語音</option>';
+      const zhVoices = voices.filter(v => v.lang.startsWith('zh'));
+      zhVoices.forEach(v => {
+        const option = document.createElement('option');
+        option.value = v.name;
+        option.textContent = `${v.name} (${v.lang})`;
+        if (savedVoice === v.name) option.selected = true;
+        select.appendChild(option);
+      });
+    }
   }
   
   async _loadHistory() {
@@ -1766,11 +2403,13 @@ class UIController {
     
     const cefrThreshold = parseInt(localStorage.getItem('audio_tutor_cefr_threshold') || '2');
     const replayOriginal = localStorage.getItem('audio_tutor_replay_original') !== 'false';
-    const ttsRate = parseFloat(localStorage.getItem('audio_tutor_tts_rate') || '1.05');
-    const ttsVoice = localStorage.getItem('audio_tutor_tts_voice') || null;
+    const ttsRate = parseFloat(localStorage.getItem('audio_tutor_tts_rate') || '1.00');
+    const ttsEngine = localStorage.getItem('audio_tutor_tts_engine') || 'edge';
+    const ttsVoice = localStorage.getItem('audio_tutor_tts_voice') || (ttsEngine === 'edge' ? 'zh-TW-HsiaoChenNeural' : (ttsEngine === 'openai' ? 'nova' : ''));
     
-    this.player = new AudioTutorPlayer(audioBlob, segments, {
+    this.player = new AudioTutorPlayer(audioBlob, segments, this.ttsService, {
       replayOriginal,
+      ttsEngine,
       ttsRate,
       ttsVoice,
       cefrThreshold,
