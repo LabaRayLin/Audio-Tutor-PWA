@@ -467,7 +467,7 @@ class AudioPipeline {
    */
   _resegmentWords(words, fallbackSegments) {
     if (!words || words.length === 0) {
-      return this._mergeSegmentsByPunctuation(fallbackSegments);
+      return this._splitAndMergeSegments(fallbackSegments);
     }
 
     const ABBREVIATIONS = new Set([
@@ -477,7 +477,7 @@ class AudioPipeline {
     ]);
 
     const isSentenceEnd = (w, nextW) => {
-      const trimmed = w.trim();
+      const trimmed = (w || '').trim();
       if (!trimmed) return false;
       
       // 標點結尾檢查
@@ -498,6 +498,11 @@ class AudioPipeline {
       return true;
     };
 
+    const isCapitalizedStart = (w) => {
+      const t = (w || '').trim();
+      return /^[A-Z]/.test(t);
+    };
+
     const sentences = [];
     let currentWords = [];
 
@@ -509,13 +514,18 @@ class AudioPipeline {
       const dur = currentWords[currentWords.length - 1].end - currentWords[0].start;
       const isPunctEnd = isSentenceEnd(w.word, nextW);
       
-      // 語音停頓檢測：若單字間距超過 0.65 秒且長度充足，適度切句
-      const hasLongPause = nextW && (nextW.start - w.end > 0.65) && dur >= 1.5;
+      // 語音停頓檢測：若單字間距超過 0.50 秒且已有足夠長度，切分
+      const hasLongPause = nextW && (nextW.start - w.end > 0.50) && dur >= 1.2;
 
-      // 超長句子保護：若無句號超過 14 秒，在逗號或停頓處斷開
-      const isOverlong = dur > 12 && (w.word.includes(',') || w.word.includes(';') || (nextW && nextW.start - w.end > 0.35));
+      // 若下一個字以大寫開頭，且當前字帶標點或有呼吸停頓 (>0.20s)，適時分句
+      const isNextClause = nextW && isCapitalizedStart(nextW.word) &&
+        (w.word.includes(',') || w.word.includes(';') || (nextW.start - w.end > 0.20)) &&
+        dur >= 2.0;
 
-      if (isPunctEnd || hasLongPause || isOverlong || i === words.length - 1) {
+      // 超長句子保護：若無句號超過 9.5 秒，在逗號或停頓處平滑斷開
+      const isOverlong = dur > 9.5 && (w.word.includes(',') || w.word.includes(';') || (nextW && nextW.start - w.end > 0.25));
+
+      if (isPunctEnd || hasLongPause || isNextClause || isOverlong || i === words.length - 1) {
         if (currentWords.length > 0) {
           // 拼接文字並優化英文標點間隔
           let text = '';
@@ -537,9 +547,9 @@ class AudioPipeline {
           const startRaw = currentWords[0].start;
           const endRaw = currentWords[currentWords.length - 1].end;
 
-          // 微擴展邊界：前置 0.04s + 後置 0.08s（避免吃字或首尾子音截斷）
-          const start = +(Math.max(0, startRaw - 0.04)).toFixed(3);
-          const end = +(endRaw + 0.08).toFixed(3);
+          // 微擴展邊界：前置 0.05s + 後置 0.10s（避免吃字或首尾子音截斷）
+          const start = +(Math.max(0, startRaw - 0.05)).toFixed(3);
+          const end = +(endRaw + 0.10).toFixed(3);
 
           if (text.trim().length > 0) {
             sentences.push({
@@ -553,15 +563,50 @@ class AudioPipeline {
       }
     }
 
-    return sentences.length > 0 ? sentences : fallbackSegments;
+    return sentences.length > 0 ? sentences : this._splitAndMergeSegments(fallbackSegments);
   }
 
-  _mergeSegmentsByPunctuation(segments) {
+  /**
+   * 備用分割與合併器：若單個 Whisper segment 內包含多個句子，自動拆解並計算時間戳
+   */
+  _splitAndMergeSegments(segments) {
     if (!segments || segments.length === 0) return [];
-    const merged = [];
+    
+    const refined = [];
+    for (const seg of segments) {
+      const text = (seg.text || '').trim();
+      if (!text) continue;
+
+      // 檢查內部是否有句號、問號、驚嘆號
+      const subSentences = text.match(/[^.!?。？！]+[.!?。？！]+["')\]}]*|[^.!?。？！]+$/g);
+      if (!subSentences || subSentences.length <= 1) {
+        refined.push(seg);
+        continue;
+      }
+
+      const totalChars = text.length;
+      const segDur = seg.end - seg.start;
+      let curStart = seg.start;
+
+      for (let k = 0; k < subSentences.length; k++) {
+        const sub = subSentences[k].trim();
+        if (!sub) continue;
+        const subDur = (sub.length / totalChars) * segDur;
+        const subEnd = (k === subSentences.length - 1) ? seg.end : (curStart + subDur);
+        refined.push({
+          start: +curStart.toFixed(3),
+          end: +subEnd.toFixed(3),
+          text: sub
+        });
+        curStart = subEnd;
+      }
+    }
+
+    // 進行相鄰過短碎片合併
+    const finalResult = [];
     let cur = null;
 
-    for (const seg of segments) {
+    for (const seg of refined) {
       if (!cur) {
         cur = { start: seg.start, end: seg.end, text: seg.text };
       } else {
@@ -569,23 +614,27 @@ class AudioPipeline {
         cur.text += ' ' + seg.text;
       }
 
-      if (/[.!?。？！]$/.test(seg.text.trim()) || (cur.end - cur.start > 12)) {
-        merged.push({
-          start: +(Math.max(0, cur.start - 0.04)).toFixed(3),
-          end: +(cur.end + 0.08).toFixed(3),
+      const isCompletePunct = /[.!?。？！]["')\]}]*$/.test(cur.text.trim());
+      const isLongEnough = (cur.end - cur.start) >= 1.5;
+
+      if ((isCompletePunct && isLongEnough) || (cur.end - cur.start > 8.0)) {
+        finalResult.push({
+          start: +(Math.max(0, cur.start - 0.05)).toFixed(3),
+          end: +(cur.end + 0.10).toFixed(3),
           text: cur.text.trim()
         });
         cur = null;
       }
     }
-    if (cur) {
-      merged.push({
-        start: +(Math.max(0, cur.start - 0.04)).toFixed(3),
-        end: +(cur.end + 0.08).toFixed(3),
+    if (cur && cur.text.trim()) {
+      finalResult.push({
+        start: +(Math.max(0, cur.start - 0.05)).toFixed(3),
+        end: +(cur.end + 0.10).toFixed(3),
         text: cur.text.trim()
       });
     }
-    return merged;
+
+    return finalResult;
   }
   
   async _prepareAudioChunks(audioBlob) {
@@ -1120,13 +1169,30 @@ class AudioTutorPlayer {
     return new Promise((resolve) => {
       if (!window.speechSynthesis) { resolve(); return; }
       const utter = new SpeechSynthesisUtterance(text);
-      utter.lang = lang;
-      utter.rate = this.options.ttsRate || 1.0;
+      utter.lang = lang || 'zh-TW';
+      utter.rate = Math.max(0.85, Math.min(1.2, (this.options.ttsRate || 1.0) * 0.95));
+      utter.pitch = 1.0;
+
+      const voices = window.speechSynthesis.getVoices();
+      let selectedVoice = null;
+
       if (this.options.ttsVoice && this.options.ttsEngine === 'system') {
-        const voices = window.speechSynthesis.getVoices();
-        const v = voices.find(v => v.name === this.options.ttsVoice);
-        if (v) utter.voice = v;
+        selectedVoice = voices.find(v => v.name === this.options.ttsVoice);
       }
+
+      if (!selectedVoice && voices.length > 0) {
+        // 優先搜尋高擬真線上神經語音 (Natural / Google / Taiwan)
+        selectedVoice =
+          voices.find(v => v.lang.startsWith('zh') && (v.name.includes('Natural') || v.name.includes('Online'))) ||
+          voices.find(v => v.lang === 'zh-TW' && (v.name.includes('Google') || v.name.includes('國語') || v.name.includes('曉臻') || v.name.includes('雅婷') || v.name.includes('Hanhan'))) ||
+          voices.find(v => v.lang === 'zh-TW' || v.lang === 'cmn-Hant-TW') ||
+          voices.find(v => v.lang.startsWith('zh'));
+      }
+
+      if (selectedVoice) {
+        utter.voice = selectedVoice;
+      }
+
       utter.onend = resolve;
       utter.onerror = resolve;
       window.speechSynthesis.speak(utter);
