@@ -535,14 +535,10 @@ class AudioPipeline {
           const startRaw = currentWords[0].start;
           const endRaw = currentWords[currentWords.length - 1].end;
 
-          // 微擴展邊界：前置 0.05s + 後置 0.10s（避免吃字或首尾子音截斷）
-          const start = +(Math.max(0, startRaw - 0.05)).toFixed(3);
-          const end = +(endRaw + 0.10).toFixed(3);
-
           if (text.trim().length > 0) {
             sentences.push({
-              start,
-              end,
+              start: +startRaw.toFixed(3),
+              end: +endRaw.toFixed(3),
               text: text.trim()
             });
           }
@@ -551,7 +547,55 @@ class AudioPipeline {
       }
     }
 
-    return sentences.length > 0 ? sentences : this._splitAndMergeSegments(fallbackSegments);
+    const sentencesToClean = sentences.length > 0 ? sentences : this._splitAndMergeSegments(fallbackSegments);
+    return this._sanitizeSentenceBoundaries(sentencesToClean);
+  }
+
+  /**
+   * 嚴格無重疊邊界平滑處理：保證相鄰句子 start >= 上一句 end，絕不重複播放前句尾音
+   */
+  _sanitizeSentenceBoundaries(sentences) {
+    if (!sentences || sentences.length === 0) return [];
+    
+    const sanitized = [];
+    for (let k = 0; k < sentences.length; k++) {
+      const cur = sentences[k];
+      const prev = k > 0 ? sanitized[k - 1] : null;
+      const next = k < sentences.length - 1 ? sentences[k + 1] : null;
+
+      let start = cur.start;
+      let end = cur.end;
+
+      // 1. 嚴格防止起點向後侵入前一句：若前一句存在，當前句 start 絕對不能小於 prev.end
+      if (prev) {
+        start = Math.max(start, prev.end);
+      }
+
+      // 2. 終點銜接：若與下一句之間存在自然靜音停頓 (gap > 0)，可延伸最多 0.05 秒或 gap 的 30%
+      if (next) {
+        const gap = next.start - end;
+        if (gap > 0) {
+          end = end + Math.min(0.05, gap * 0.3);
+        } else {
+          // 若相鄰無停頓或略微重疊，嚴格以 next.start 截斷
+          end = Math.min(end, next.start);
+        }
+      } else {
+        // 最後一句尾端可微幅延伸 0.08 秒
+        end = end + 0.08;
+      }
+
+      // 確保終點大於起點
+      end = Math.max(start + 0.05, end);
+
+      sanitized.push({
+        start: +start.toFixed(3),
+        end: +end.toFixed(3),
+        text: cur.text
+      });
+    }
+
+    return sanitized;
   }
 
   /**
@@ -607,8 +651,8 @@ class AudioPipeline {
 
       if ((isCompletePunct && isLongEnough) || (cur.end - cur.start > 8.0)) {
         finalResult.push({
-          start: +(Math.max(0, cur.start - 0.05)).toFixed(3),
-          end: +(cur.end + 0.10).toFixed(3),
+          start: +cur.start.toFixed(3),
+          end: +cur.end.toFixed(3),
           text: cur.text.trim()
         });
         cur = null;
@@ -616,8 +660,8 @@ class AudioPipeline {
     }
     if (cur && cur.text.trim()) {
       finalResult.push({
-        start: +(Math.max(0, cur.start - 0.05)).toFixed(3),
-        end: +(cur.end + 0.10).toFixed(3),
+        start: +cur.start.toFixed(3),
+        end: +cur.end.toFixed(3),
         text: cur.text.trim()
       });
     }
