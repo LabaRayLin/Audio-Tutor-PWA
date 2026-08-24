@@ -1,13 +1,34 @@
 (function() {
 'use strict';
 
+const safeStorage = {
+  getItem(key, fallback = null) {
+    try {
+      const val = localStorage.getItem(key);
+      return val !== null ? val : fallback;
+    } catch (e) {
+      return fallback;
+    }
+  },
+  setItem(key, val) {
+    try {
+      localStorage.setItem(key, val);
+    } catch (e) {}
+  },
+  removeItem(key) {
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {}
+  }
+};
+
 class ApiKeyManager {
-  getGroqKey() { return (localStorage.getItem('audio_tutor_groq_key') || '').trim(); }
-  setGroqKey(key) { localStorage.setItem('audio_tutor_groq_key', (key || '').trim()); }
-  getGeminiKey() { return (localStorage.getItem('audio_tutor_gemini_key') || '').trim(); }
-  setGeminiKey(key) { localStorage.setItem('audio_tutor_gemini_key', (key || '').trim()); }
-  getOpenAIKey() { return (localStorage.getItem('audio_tutor_openai_key') || '').trim(); }
-  setOpenAIKey(key) { localStorage.setItem('audio_tutor_openai_key', (key || '').trim()); }
+  getGroqKey() { return (safeStorage.getItem('audio_tutor_groq_key') || '').trim(); }
+  setGroqKey(key) { safeStorage.setItem('audio_tutor_groq_key', (key || '').trim()); }
+  getGeminiKey() { return (safeStorage.getItem('audio_tutor_gemini_key') || '').trim(); }
+  setGeminiKey(key) { safeStorage.setItem('audio_tutor_gemini_key', (key || '').trim()); }
+  getOpenAIKey() { return (safeStorage.getItem('audio_tutor_openai_key') || '').trim(); }
+  setOpenAIKey(key) { safeStorage.setItem('audio_tutor_openai_key', (key || '').trim()); }
   hasAllKeys() { return !!this.getGroqKey() && !!this.getGeminiKey(); }
 }
 
@@ -2083,83 +2104,102 @@ class PwaInstallManager {
   constructor() {
     this.deferredPrompt = null;
     this.isStandalone = false;
-    this.isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-    this._checkStandalone();
-    this._init();
+    this.isIos = false;
+    try {
+      this.isIos = /iPad|iPhone|iPod/.test(navigator.userAgent || '') && !window.MSStream;
+      this._checkStandalone();
+      this._init();
+    } catch (e) {
+      console.warn('PwaInstallManager init error:', e);
+    }
   }
 
   _checkStandalone() {
-    if (typeof window !== 'undefined') {
-      this.isStandalone = 
-        window.matchMedia('(display-mode: standalone)').matches ||
-        window.navigator.standalone === true ||
-        document.referrer.includes('android-app://');
+    try {
+      const matchMediaStandalone = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(display-mode: standalone)')?.matches;
+      const navStandalone = typeof navigator !== 'undefined' && (navigator.standalone === true);
+      const refAndroid = typeof document !== 'undefined' && document.referrer && typeof document.referrer === 'string' && document.referrer.includes('android-app://');
+      this.isStandalone = !!(matchMediaStandalone || navStandalone || refAndroid);
+    } catch (e) {
+      this.isStandalone = false;
     }
   }
 
   _init() {
-    if (this.isStandalone) {
-      console.log('[PWA] 目前已在獨立全螢幕 App 模式中執行');
-      return;
-    }
-
-    // 攔截 Chromium / Android / Edge / Desktop Chrome 安裝事件
-    window.addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault();
-      this.deferredPrompt = e;
-      this.showInstallUI();
-    });
-
-    // 監聽安裝完成事件
-    window.addEventListener('appinstalled', () => {
-      this.deferredPrompt = null;
-      this.hideInstallUI();
-      console.log('[PWA] Audio Tutor 已成功安裝至桌面！');
-    });
-
-    // iOS 裝置且未安裝時，若使用者尚未手動關閉過，提示安裝引導
-    if (this.isIos && !this.isStandalone) {
-      const dismissed = localStorage.getItem('audio_tutor_a2hs_dismissed');
-      if (!dismissed) {
-        setTimeout(() => this.showInstallUI(true), 1200);
+    try {
+      if (this.isStandalone) {
+        console.log('[PWA] 目前已在獨立全螢幕 App 模式中執行');
+        return;
       }
+
+      // 攔截 Chromium / Android / Edge / Desktop Chrome 安裝事件
+      window.addEventListener('beforeinstallprompt', (e) => {
+        try {
+          e.preventDefault();
+          this.deferredPrompt = e;
+          this.showInstallUI();
+        } catch (err) {}
+      });
+
+      // 監聽安裝完成事件
+      window.addEventListener('appinstalled', () => {
+        try {
+          this.deferredPrompt = null;
+          this.hideInstallUI();
+          console.log('[PWA] Audio Tutor 已成功安裝至桌面！');
+        } catch (err) {}
+      });
+
+      // iOS 裝置且未安裝時，若使用者尚未手動關閉過，提示安裝引導
+      if (this.isIos && !this.isStandalone) {
+        const dismissed = safeStorage.getItem('audio_tutor_a2hs_dismissed');
+        if (!dismissed) {
+          setTimeout(() => this.showInstallUI(true), 1200);
+        }
+      }
+    } catch (e) {
+      console.warn('PwaInstallManager _init error:', e);
     }
   }
 
   showInstallUI(isIos = false) {
-    if (this.isStandalone) return;
-    const banner = document.getElementById('pwa-install-banner');
-    const headerBtn = document.getElementById('btn-header-install');
-    if (headerBtn) headerBtn.classList.remove('hidden');
+    try {
+      if (this.isStandalone) return;
+      const banner = document.getElementById('pwa-install-banner');
+      const headerBtn = document.getElementById('btn-header-install');
+      if (headerBtn) headerBtn.classList.remove('hidden');
 
-    const dismissed = localStorage.getItem('audio_tutor_a2hs_dismissed');
-    if (banner && !dismissed) {
-      banner.classList.remove('hidden');
-    }
+      const dismissed = safeStorage.getItem('audio_tutor_a2hs_dismissed');
+      if (banner && !dismissed) {
+        banner.classList.remove('hidden');
+      }
+    } catch (e) {}
   }
 
   hideInstallUI() {
-    const banner = document.getElementById('pwa-install-banner');
-    const headerBtn = document.getElementById('btn-header-install');
-    if (banner) banner.classList.add('hidden');
-    if (headerBtn) headerBtn.classList.add('hidden');
+    try {
+      const banner = document.getElementById('pwa-install-banner');
+      const headerBtn = document.getElementById('btn-header-install');
+      if (banner) banner.classList.add('hidden');
+      if (headerBtn) headerBtn.classList.add('hidden');
+    } catch (e) {}
   }
 
   async promptInstall() {
-    if (this.deferredPrompt) {
-      this.deferredPrompt.prompt();
-      const choiceResult = await this.deferredPrompt.userChoice;
-      console.log(`[PWA] 使用者安裝選擇: ${choiceResult.outcome}`);
-      if (choiceResult.outcome === 'accepted') {
-        this.hideInstallUI();
+    try {
+      if (this.deferredPrompt) {
+        this.deferredPrompt.prompt();
+        const choiceResult = await this.deferredPrompt.userChoice;
+        console.log(`[PWA] 使用者安裝選擇: ${choiceResult?.outcome}`);
+        if (choiceResult && choiceResult.outcome === 'accepted') {
+          this.hideInstallUI();
+        }
+        this.deferredPrompt = null;
+      } else {
+        const modal = document.getElementById('ios-install-modal');
+        if (modal) modal.classList.remove('hidden');
       }
-      this.deferredPrompt = null;
-    } else if (this.isIos) {
-      // 彈出 iOS 專屬圖文步驟導引 Modal
-      const modal = document.getElementById('ios-install-modal');
-      if (modal) modal.classList.remove('hidden');
-    } else {
-      // 其他瀏覽器提示
+    } catch (e) {
       const modal = document.getElementById('ios-install-modal');
       if (modal) modal.classList.remove('hidden');
     }
@@ -2168,25 +2208,29 @@ class PwaInstallManager {
 
 class UIController {
   constructor() {
-    this.apiKeys = new ApiKeyManager();
-    this.storage = new StorageManager();
-    this.ttsService = new NeuralTtsService(this.apiKeys, this.storage);
-    this.podcasts = new PodcastManager();
-    this.player = null;
-    this.currentSession = null;
-    this.currentChannel = null;
-    this.currentEpisodes = [];
-    this.activeTab = 'podcast'; // 'podcast' | 'local' | 'custom' | 'history' | 'settings'
+    try {
+      this.apiKeys = new ApiKeyManager();
+      this.storage = new StorageManager();
+      this.ttsService = new NeuralTtsService(this.apiKeys, this.storage);
+      this.podcasts = new PodcastManager();
+      this.player = null;
+      this.currentSession = null;
+      this.currentChannel = null;
+      this.currentEpisodes = [];
+      this.activeTab = 'podcast'; // 'podcast' | 'local' | 'custom' | 'history' | 'settings'
 
-    this._bindUI();
-    this._loadSettings();
-    this._loadHistory();
-    this._populateVoices();
-    this._registerSW();
-    this._renderPodcastChannels('all');
-    
-    if (window.speechSynthesis) {
-      window.speechSynthesis.onvoiceschanged = () => this._populateVoices();
+      this._bindUI();
+      this._loadSettings();
+      this._loadHistory();
+      this._populateVoices();
+      this._registerSW();
+      this._renderPodcastChannels('all');
+      
+      if (window.speechSynthesis) {
+        window.speechSynthesis.onvoiceschanged = () => this._populateVoices();
+      }
+    } catch (err) {
+      console.error('UIController constructor error:', err);
     }
   }
 
@@ -2216,7 +2260,7 @@ class UIController {
     if (btnBannerDismiss) {
       btnBannerDismiss.addEventListener('click', () => {
         document.getElementById('pwa-install-banner')?.classList.add('hidden');
-        localStorage.setItem('audio_tutor_a2hs_dismissed', 'true');
+        safeStorage.setItem('audio_tutor_a2hs_dismissed', 'true');
       });
     }
 
@@ -2226,7 +2270,7 @@ class UIController {
       if (btn) {
         btn.addEventListener('click', () => {
           document.getElementById('ios-install-modal')?.classList.add('hidden');
-          localStorage.setItem('audio_tutor_a2hs_dismissed', 'true');
+          safeStorage.setItem('audio_tutor_a2hs_dismissed', 'true');
         });
       }
     });
@@ -2350,20 +2394,20 @@ class UIController {
         btnToggleLoop.setAttribute('title', isLooping ? '🔂 單句循環中 (點擊切換為整篇循序播放)' : '🔁 開啟單句無限循環跟讀 (快捷鍵 L)');
       }
       if (toggleLoopSentence) toggleLoopSentence.checked = isLooping;
-      localStorage.setItem('audio_tutor_loop_sentence', isLooping ? 'true' : 'false');
+      safeStorage.setItem('audio_tutor_loop_sentence', isLooping ? 'true' : 'false');
       if (this.player) this.player.updateOptions({ loopCurrentSentence: isLooping });
     };
 
     if (btnToggleLoop) {
       btnToggleLoop.addEventListener('click', () => {
-        const isLooping = this.player ? this.player.toggleLoopCurrentSentence() : (localStorage.getItem('audio_tutor_loop_sentence') === 'true' ? false : true);
+        const isLooping = this.player ? this.player.toggleLoopCurrentSentence() : (safeStorage.getItem('audio_tutor_loop_sentence') === 'true' ? false : true);
         updateLoopUI(isLooping);
         this._showToast(isLooping ? '🔂 已開啟「單句無限循環跟讀」模式' : '➡️ 已恢復「整篇循序播放」模式', 'info');
       });
     }
 
     if (toggleLoopSentence) {
-      toggleLoopSentence.checked = localStorage.getItem('audio_tutor_loop_sentence') === 'true';
+      toggleLoopSentence.checked = safeStorage.getItem('audio_tutor_loop_sentence') === 'true';
       toggleLoopSentence.addEventListener('change', (e) => {
         updateLoopUI(e.target.checked);
         this._showToast(e.target.checked ? '🔂 已開啟「單句無限循環跟讀」模式' : '➡️ 已恢復「整篇循序播放」模式', 'info');
@@ -2474,7 +2518,7 @@ class UIController {
     const ttsEngine = document.getElementById('tts-engine');
     if (ttsEngine) {
       ttsEngine.addEventListener('change', e => {
-        localStorage.setItem('audio_tutor_tts_engine', e.target.value);
+        safeStorage.setItem('audio_tutor_tts_engine', e.target.value);
         this._populateVoices();
         const curVoice = document.getElementById('tts-voice')?.value;
         if (this.player) this.player.updateOptions({ ttsEngine: e.target.value, ttsVoice: curVoice });
@@ -2485,7 +2529,7 @@ class UIController {
     const ttsVoice = document.getElementById('tts-voice');
     if (ttsVoice) {
       ttsVoice.addEventListener('change', e => {
-        localStorage.setItem('audio_tutor_tts_voice', e.target.value);
+        safeStorage.setItem('audio_tutor_tts_voice', e.target.value);
         if (this.player) this.player.updateOptions({ ttsVoice: e.target.value });
       });
     }
@@ -2497,7 +2541,7 @@ class UIController {
       origRate.addEventListener('input', e => {
         const val = parseFloat(e.target.value).toFixed(2);
         if (origRateLabel) origRateLabel.textContent = val;
-        localStorage.setItem('audio_tutor_orig_rate', e.target.value);
+        safeStorage.setItem('audio_tutor_orig_rate', e.target.value);
         const quickSpeedBtn = document.getElementById('btn-quick-speed');
         if (quickSpeedBtn) quickSpeedBtn.textContent = `${parseFloat(val).toFixed(1)}x`;
         if (this.player) this.player.updateOptions({ origRate: parseFloat(e.target.value) });
@@ -2509,12 +2553,12 @@ class UIController {
     if (btnQuickSpeed) {
       const speedCycle = [1.0, 0.8, 0.9, 1.1, 1.2];
       btnQuickSpeed.addEventListener('click', () => {
-        const cur = parseFloat(localStorage.getItem('audio_tutor_orig_rate') || '1.00');
+        const cur = parseFloat(safeStorage.getItem('audio_tutor_orig_rate', '1.00'));
         let nextIdx = speedCycle.findIndex(s => Math.abs(s - cur) < 0.04) + 1;
         if (nextIdx >= speedCycle.length || nextIdx < 0) nextIdx = 0;
         const nextSpeed = speedCycle[nextIdx];
 
-        localStorage.setItem('audio_tutor_orig_rate', nextSpeed.toFixed(2));
+        safeStorage.setItem('audio_tutor_orig_rate', nextSpeed.toFixed(2));
         btnQuickSpeed.textContent = `${nextSpeed.toFixed(1)}x`;
 
         const origRateEl = document.getElementById('orig-rate');
@@ -2533,7 +2577,7 @@ class UIController {
       const ttsRateLabel = document.getElementById('tts-rate-label');
       ttsRate.addEventListener('input', e => {
         if (ttsRateLabel) ttsRateLabel.textContent = parseFloat(e.target.value).toFixed(2);
-        localStorage.setItem('audio_tutor_tts_rate', e.target.value);
+        safeStorage.setItem('audio_tutor_tts_rate', e.target.value);
         if (this.player) this.player.updateOptions({ ttsRate: parseFloat(e.target.value) });
       });
     }
@@ -2552,7 +2596,7 @@ class UIController {
       cefrSlider.addEventListener('input', e => {
         const idx = parseInt(e.target.value) - 1;
         if (cefrLabel) cefrLabel.textContent = labels[idx] || 'A1';
-        localStorage.setItem('audio_tutor_cefr_threshold', idx);
+        safeStorage.setItem('audio_tutor_cefr_threshold', idx);
         if (this.player) this.player.updateOptions({ cefrThreshold: idx });
       });
     }
@@ -2561,7 +2605,7 @@ class UIController {
     const toggleReplay = document.getElementById('toggle-replay');
     if (toggleReplay) {
       toggleReplay.addEventListener('change', e => {
-        localStorage.setItem('audio_tutor_replay_original', e.target.checked);
+        safeStorage.setItem('audio_tutor_replay_original', e.target.checked);
         if (this.player) this.player.updateOptions({ replayOriginal: e.target.checked });
       });
     }
@@ -2570,7 +2614,7 @@ class UIController {
     const sourceLang = document.getElementById('source-lang');
     if (sourceLang) {
       sourceLang.addEventListener('change', e => {
-        localStorage.setItem('audio_tutor_source_lang', e.target.value);
+        safeStorage.setItem('audio_tutor_source_lang', e.target.value);
       });
     }
 
@@ -2938,11 +2982,11 @@ class UIController {
     const groqKey = this.apiKeys.getGroqKey();
     const geminiKey = this.apiKeys.getGeminiKey();
     const openaiKey = this.apiKeys.getOpenAIKey();
-    const lang = localStorage.getItem('audio_tutor_source_lang') || 'en';
-    const rate = localStorage.getItem('audio_tutor_tts_rate') || '1.10';
-    const engine = localStorage.getItem('audio_tutor_tts_engine') || 'system';
-    const cefr = localStorage.getItem('audio_tutor_cefr_threshold') || '2';  // 預設 B1 (index 2)
-    const replay = localStorage.getItem('audio_tutor_replay_original') !== 'false';
+    const lang = safeStorage.getItem('audio_tutor_source_lang', 'en');
+    const rate = safeStorage.getItem('audio_tutor_tts_rate', '1.10');
+    const engine = safeStorage.getItem('audio_tutor_tts_engine', 'system');
+    const cefr = safeStorage.getItem('audio_tutor_cefr_threshold', '2');  // 預設 B1 (index 2)
+    const replay = safeStorage.getItem('audio_tutor_replay_original') !== 'false';
     
     const groqInput = document.getElementById('groq-key-input');
     if (groqInput) groqInput.value = groqKey;
@@ -2959,7 +3003,7 @@ class UIController {
     const langEl = document.getElementById('source-lang');
     if (langEl) langEl.value = lang;
     
-    const origRate = localStorage.getItem('audio_tutor_orig_rate') || '1.00';
+    const origRate = safeStorage.getItem('audio_tutor_orig_rate', '1.00');
     const origRateEl = document.getElementById('orig-rate');
     const origRateLabel = document.getElementById('orig-rate-label');
     if (origRateEl) origRateEl.value = origRate;
@@ -2988,10 +3032,10 @@ class UIController {
   
   _populateVoices() {
     const select = document.getElementById('tts-voice');
-    const engine = document.getElementById('tts-engine')?.value || localStorage.getItem('audio_tutor_tts_engine') || 'system';
+    const engine = document.getElementById('tts-engine')?.value || safeStorage.getItem('audio_tutor_tts_engine', 'system');
     if (!select) return;
     
-    const savedVoice = localStorage.getItem('audio_tutor_tts_voice');
+    const savedVoice = safeStorage.getItem('audio_tutor_tts_voice');
     select.innerHTML = '';
     
     if (engine === 'openai') {
@@ -3237,11 +3281,11 @@ class UIController {
     const sampleRate = origBuffer.sampleRate || 24000;
     const numChannels = Math.min(2, origBuffer.numberOfChannels || 1);
 
-    const cefrThreshold = parseInt(localStorage.getItem('audio_tutor_cefr_threshold') || '2');
-    const replayOriginal = localStorage.getItem('audio_tutor_replay_original') !== 'false';
-    const ttsRate = parseFloat(localStorage.getItem('audio_tutor_tts_rate') || '1.00');
-    const ttsEngine = localStorage.getItem('audio_tutor_tts_engine') || 'edge';
-    const ttsVoice = localStorage.getItem('audio_tutor_tts_voice') || (ttsEngine === 'edge' ? 'zh-TW-HsiaoChenNeural' : (ttsEngine === 'openai' ? 'nova' : ''));
+    const cefrThreshold = parseInt(safeStorage.getItem('audio_tutor_cefr_threshold', '2'));
+    const replayOriginal = safeStorage.getItem('audio_tutor_replay_original') !== 'false';
+    const ttsRate = parseFloat(safeStorage.getItem('audio_tutor_tts_rate', '1.00'));
+    const ttsEngine = safeStorage.getItem('audio_tutor_tts_engine', 'edge');
+    const ttsVoice = safeStorage.getItem('audio_tutor_tts_voice') || (ttsEngine === 'edge' ? 'zh-TW-HsiaoChenNeural' : (ttsEngine === 'openai' ? 'nova' : ''));
 
     const cefrLevels = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
     const shouldExplain = (seg) => {
@@ -3550,13 +3594,13 @@ class UIController {
   _initPlayer(audioBlob, segments, fileName) {
     if (this.player) this.player.destroy();
     
-    const cefrThreshold = parseInt(localStorage.getItem('audio_tutor_cefr_threshold') || '2');
-    const replayOriginal = localStorage.getItem('audio_tutor_replay_original') !== 'false';
-    const loopCurrentSentence = localStorage.getItem('audio_tutor_loop_sentence') === 'true';
-    const origRate = parseFloat(localStorage.getItem('audio_tutor_orig_rate') || '1.00');
-    const ttsRate = parseFloat(localStorage.getItem('audio_tutor_tts_rate') || '1.00');
-    const ttsEngine = localStorage.getItem('audio_tutor_tts_engine') || 'edge';
-    const ttsVoice = localStorage.getItem('audio_tutor_tts_voice') || (ttsEngine === 'edge' ? 'zh-TW-HsiaoChenNeural' : (ttsEngine === 'openai' ? 'nova' : ''));
+    const cefrThreshold = parseInt(safeStorage.getItem('audio_tutor_cefr_threshold', '2'));
+    const replayOriginal = safeStorage.getItem('audio_tutor_replay_original') !== 'false';
+    const loopCurrentSentence = safeStorage.getItem('audio_tutor_loop_sentence') === 'true';
+    const origRate = parseFloat(safeStorage.getItem('audio_tutor_orig_rate', '1.00'));
+    const ttsRate = parseFloat(safeStorage.getItem('audio_tutor_tts_rate', '1.00'));
+    const ttsEngine = safeStorage.getItem('audio_tutor_tts_engine', 'edge');
+    const ttsVoice = safeStorage.getItem('audio_tutor_tts_voice') || (ttsEngine === 'edge' ? 'zh-TW-HsiaoChenNeural' : (ttsEngine === 'openai' ? 'nova' : ''));
     
     const quickSpeedBtn = document.getElementById('btn-quick-speed');
     if (quickSpeedBtn) quickSpeedBtn.textContent = `${origRate.toFixed(1)}x`;
@@ -4068,9 +4112,22 @@ class UIController {
   }
 }
 
-// 啟動應用
-document.addEventListener('DOMContentLoaded', () => {
-  window.app = new UIController();
-});
+// 啟動應用 (支援 DOMContentLoaded 與即時載入，確保任何情況下均能正常綁定事件)
+function startApp() {
+  try {
+    if (!window.app) {
+      window.app = new UIController();
+      console.log('✅ Audio Tutor App initialized successfully.');
+    }
+  } catch (err) {
+    console.error('Fatal initialization error:', err);
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', startApp);
+} else {
+  startApp();
+}
 
 })();
