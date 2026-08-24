@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Audio Tutor — 聽覺沉浸式學習</title>
-  <link rel="stylesheet" href="style.css?v=3.5">
+  <link rel="stylesheet" href="style.css?v=3.8">
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -180,10 +180,9 @@
             <div class="input-group">
               <label for="tts-engine">語音合成引擎 (TTS Engine)</label>
               <select id="tts-engine" class="select-input">
-                <option value="google" selected>⚡ Google 雲端自然語音 (流暢繁中 · 零設定免金鑰 · 推薦)</option>
-                <option value="openai">🤖 OpenAI TTS-1 (頂級擬真人聲 · 需填 OpenAI Key)</option>
-                <option value="edge">✨ Microsoft Edge-TTS (本機伺服器代理)</option>
-                <option value="system">💻 裝置系統語音 (離線 Web Speech API)</option>
+                <option value="system" selected>💻 本機/瀏覽器系統語音 (零延遲免金鑰 · 支援 Google 國語 / 微軟 Natural)</option>
+                <option value="openai">🤖 OpenAI TTS-1 (頂級真人級神經音質 · 需填 OpenAI Key)</option>
+                <option value="edge">✨ Microsoft Edge-TTS (高擬真繁中 · 需啟動本機 server.py)</option>
               </select>
             </div>
 
@@ -191,7 +190,7 @@
               <label for="tts-voice">導覽語音角色 (Voice Character)</label>
               <select id="tts-voice" class="select-input">
                 <!-- Dynamically populated from JS based on chosen engine -->
-                <option value="zh-TW" selected>🇹🇼 臺灣繁中自然女聲 (清晰流暢 · 推薦)</option>
+                <option value="">載入系統繁中語音中...</option>
               </select>
             </div>
 
@@ -387,6 +386,6 @@
       </div>
     </div>
   </div>
-  <script src="app.js?v=3.5"></script>
+  <script src="app.js?v=3.8"></script>
 </body>
 </html>

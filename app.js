@@ -175,8 +175,8 @@ class NeuralTtsService {
   async synthesize(text, options = {}) {
     if (!text || !text.trim()) return null;
     const cleanText = text.trim();
-    const engine = options.engine || 'google';
-    const voice = options.voice || (engine === 'openai' ? 'nova' : (engine === 'edge' ? 'zh-TW-HsiaoChenNeural' : 'zh-TW'));
+    const engine = options.engine || 'system';
+    const voice = options.voice || (engine === 'openai' ? 'nova' : 'zh-TW-HsiaoChenNeural');
     const rate = options.rate || 1.10;
 
     const cacheKey = this._getCacheKey(cleanText, engine, voice, rate);
@@ -201,8 +201,6 @@ class NeuralTtsService {
       audioBlob = await this._synthesizeOpenAI(cleanText, voice, rate);
     } else if (engine === 'edge') {
       audioBlob = await this._synthesizeEdge(cleanText, voice, rate);
-    } else if (engine === 'google') {
-      audioBlob = await this._synthesizeGoogle(cleanText, voice, rate);
     }
 
     if (audioBlob) {
@@ -213,17 +211,6 @@ class NeuralTtsService {
     }
 
     return audioBlob;
-  }
-
-  async _synthesizeGoogle(text, lang = 'zh-TW', rate = 1.10) {
-    try {
-      const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${lang}&client=tw-ob&q=${encodeURIComponent(text)}`;
-      const res = await fetch(url);
-      if (res.ok) {
-        return await res.blob();
-      }
-    } catch (e) {}
-    return null;
   }
 
   async _synthesizeEdge(text, voice = 'zh-TW-HsiaoChenNeural', rate = 1.0) {
@@ -1149,12 +1136,12 @@ class AudioTutorPlayer {
   }
   
   /**
-   * 播放語音講解 (Google 雲端 / OpenAI / Edge-TTS 優先，失敗則平滑降級 Web Speech API)
+   * 播放語音講解 (OpenAI / Edge-TTS 優先，本機/系統語音精確套用選定角色)
    */
   async _speak(text, lang = 'zh-TW') {
     if (!text || !text.trim()) return;
     const rate = this.options.ttsRate || 1.10;
-    const engine = this.options.ttsEngine || 'google';
+    const engine = this.options.ttsEngine || 'system';
 
     // 1. 嘗試 OpenAI TTS (如果選用且有填 Key)
     if (engine === 'openai' && this.ttsService) {
@@ -1175,7 +1162,7 @@ class AudioTutorPlayer {
           return;
         }
       } catch (e) {
-        console.warn('[Player] OpenAI TTS 異常，切換至 Google 語音：', e);
+        console.warn('[Player] OpenAI TTS 異常，降級至系統語音：', e);
       }
     }
 
@@ -1198,65 +1185,12 @@ class AudioTutorPlayer {
           return;
         }
       } catch (e) {
-        console.warn('[Player] Edge-TTS 異常，切換至 Google 語音：', e);
+        console.warn('[Player] Edge-TTS 異常，降級至系統語音：', e);
       }
     }
 
-    // 3. 嘗試 Google 雲端自然繁中語音 (免金鑰、流暢自然、高擬真)
-    if (engine === 'google' || !engine) {
-      try {
-        await this._playGoogleTts(text, rate);
-        return;
-      } catch (gErr) {
-        console.warn('[Player] Google 語音播放受限，切換至 Web Speech API：', gErr);
-      }
-    }
-
-    // 4. 降級至 Web Speech API (自動選用最自然的中文語音角色)
+    // 3. 系統語音 Web Speech API (精確套用選定角色與語速)
     return this._speakSpeechSynthesis(text, lang, rate);
-  }
-
-  _playGoogleTts(text, rate = 1.10) {
-    return new Promise((resolve, reject) => {
-      const clean = text.trim();
-      const chunks = clean.match(/[^，。！？,.!?]+[，。！？,.!?]*|.+/g) || [clean];
-      let idx = 0;
-
-      const playNext = () => {
-        if (idx >= chunks.length) {
-          resolve();
-          return;
-        }
-        const chunk = chunks[idx++].trim();
-        if (!chunk) {
-          playNext();
-          return;
-        }
-
-        const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=zh-TW&client=tw-ob&q=${encodeURIComponent(chunk)}`;
-        const audio = new Audio(url);
-        audio.playbackRate = Math.max(0.85, Math.min(1.5, rate));
-
-        let timer = null;
-        const done = () => {
-          if (timer) clearTimeout(timer);
-          audio.onended = null;
-          audio.onerror = null;
-          playNext();
-        };
-
-        audio.onended = done;
-        audio.onerror = (e) => {
-          if (timer) clearTimeout(timer);
-          reject(e);
-        };
-
-        timer = setTimeout(done, 10000);
-        audio.play().catch(reject);
-      };
-
-      playNext();
-    });
   }
 
   _speakSpeechSynthesis(text, lang = 'zh-TW', rate = 1.10) {
@@ -1265,8 +1199,8 @@ class AudioTutorPlayer {
       window.speechSynthesis.cancel();
       const utter = new SpeechSynthesisUtterance(text);
       utter.lang = lang || 'zh-TW';
-      utter.rate = Math.max(0.95, Math.min(1.5, rate));
-      utter.pitch = 1.05;
+      utter.rate = Math.max(0.75, Math.min(1.75, rate));
+      utter.pitch = 1.0;
 
       const voices = window.speechSynthesis.getVoices();
       let selectedVoice = null;
@@ -2342,7 +2276,7 @@ class UIController {
     const openaiKey = this.apiKeys.getOpenAIKey();
     const lang = localStorage.getItem('audio_tutor_source_lang') || 'en';
     const rate = localStorage.getItem('audio_tutor_tts_rate') || '1.10';
-    const engine = localStorage.getItem('audio_tutor_tts_engine') || 'google';
+    const engine = localStorage.getItem('audio_tutor_tts_engine') || 'system';
     const cefr = localStorage.getItem('audio_tutor_cefr_threshold') || '2';  // 預設 B1 (index 2)
     const replay = localStorage.getItem('audio_tutor_replay_original') !== 'false';
     
@@ -2382,39 +2316,13 @@ class UIController {
   
   _populateVoices() {
     const select = document.getElementById('tts-voice');
-    const engine = document.getElementById('tts-engine')?.value || localStorage.getItem('audio_tutor_tts_engine') || 'google';
+    const engine = document.getElementById('tts-engine')?.value || localStorage.getItem('audio_tutor_tts_engine') || 'system';
     if (!select) return;
     
     const savedVoice = localStorage.getItem('audio_tutor_tts_voice');
     select.innerHTML = '';
     
-    if (engine === 'google') {
-      const googleVoices = [
-        { id: 'zh-TW', name: '🇹🇼 臺灣繁中自然女聲 (清晰流暢 · 精聽推薦)' },
-      ];
-      googleVoices.forEach(v => {
-        const option = document.createElement('option');
-        option.value = v.id;
-        option.textContent = v.name;
-        option.selected = true;
-        select.appendChild(option);
-      });
-    } else if (engine === 'edge') {
-      const edgeVoices = [
-        { id: 'zh-TW-HsiaoChenNeural', name: '🇹🇼 臺灣曉臻 (溫暖自然 · 本機代理)' },
-        { id: 'zh-TW-YunJheNeural', name: '🇹🇼 臺灣雲哲 (清晰穩重男聲)' },
-        { id: 'zh-TW-HsiaoYuNeural', name: '🇹🇼 臺灣曉雨 (清新活潑女聲)' },
-        { id: 'zh-CN-XiaoxiaoNeural', name: '🇨🇳 曉曉 (自然導覽女聲)' },
-        { id: 'zh-CN-YunxiNeural', name: '🇨🇳 雲希 (生動流暢男聲)' },
-      ];
-      edgeVoices.forEach(v => {
-        const option = document.createElement('option');
-        option.value = v.id;
-        option.textContent = v.name;
-        if (savedVoice === v.id || (!savedVoice && v.id === 'zh-TW-HsiaoChenNeural')) option.selected = true;
-        select.appendChild(option);
-      });
-    } else if (engine === 'openai') {
+    if (engine === 'openai') {
       const openAiVoices = [
         { id: 'nova', name: '✨ Nova (自然親切女聲 · 推薦)' },
         { id: 'alloy', name: '🎙️ Alloy (通用平衡音)' },
@@ -2430,6 +2338,21 @@ class UIController {
         if (savedVoice === v.id || (!savedVoice && v.id === 'nova')) option.selected = true;
         select.appendChild(option);
       });
+    } else if (engine === 'edge') {
+      const edgeVoices = [
+        { id: 'zh-TW-HsiaoChenNeural', name: '🇹🇼 臺灣曉臻 (溫暖自然女聲 · 需 server.py)' },
+        { id: 'zh-TW-YunJheNeural', name: '🇹🇼 臺灣雲哲 (清晰穩重男聲 · 需 server.py)' },
+        { id: 'zh-TW-HsiaoYuNeural', name: '🇹🇼 臺灣曉雨 (清新活潑女聲 · 需 server.py)' },
+        { id: 'zh-CN-XiaoxiaoNeural', name: '🇨🇳 曉曉 (自然導覽女聲 · 需 server.py)' },
+        { id: 'zh-CN-YunxiNeural', name: '🇨🇳 雲希 (生動流暢男聲 · 需 server.py)' },
+      ];
+      edgeVoices.forEach(v => {
+        const option = document.createElement('option');
+        option.value = v.id;
+        option.textContent = v.name;
+        if (savedVoice === v.id || (!savedVoice && v.id === 'zh-TW-HsiaoChenNeural')) option.selected = true;
+        select.appendChild(option);
+      });
     } else {
       // System voices
       if (!window.speechSynthesis) {
@@ -2437,15 +2360,33 @@ class UIController {
         return;
       }
       const voices = window.speechSynthesis.getVoices();
-      select.innerHTML = '<option value="">系統預設最佳繁中語音</option>';
-      const zhVoices = voices.filter(v => v.lang.startsWith('zh') || v.lang.includes('TW') || v.lang.includes('Hant'));
-      zhVoices.forEach(v => {
+      if (!voices || voices.length === 0) {
+        select.innerHTML = '<option value="">系統繁中語音載入中 (請稍候)...</option>';
+        return;
+      }
+
+      const zhVoices = voices.filter(v => v.lang.startsWith('zh') || v.lang.includes('TW') || v.lang.includes('Hant') || v.lang.includes('cmn'));
+      const list = zhVoices.length > 0 ? zhVoices : voices;
+
+      list.forEach(v => {
         const option = document.createElement('option');
         option.value = v.name;
-        option.textContent = `${v.name} (${v.lang})`;
+        let prefix = '🗣️ ';
+        if (v.name.includes('Natural') || v.name.includes('Online')) prefix = '✨ ';
+        else if (v.name.includes('Google')) prefix = '🌟 ';
+        else if (v.lang === 'zh-TW' || v.name.includes('Taiwan') || v.name.includes('臺灣')) prefix = '🇹🇼 ';
+        else if (v.lang === 'zh-HK' || v.name.includes('Hong Kong')) prefix = '🇭🇰 ';
+
+        option.textContent = `${prefix}${v.name} (${v.lang})`;
         if (savedVoice === v.name) option.selected = true;
         select.appendChild(option);
       });
+
+      if (!select.value && select.options.length > 0) {
+        const best = Array.from(select.options).find(o => o.text.includes('Google') || o.text.includes('Natural') || o.text.includes('🇹🇼'));
+        if (best) best.selected = true;
+        else select.options[0].selected = true;
+      }
     }
   }
   
@@ -3035,7 +2976,7 @@ class UIController {
       return;
     }
 
-    const engine = document.getElementById('tts-engine')?.value || localStorage.getItem('audio_tutor_tts_engine') || 'google';
+    const engine = document.getElementById('tts-engine')?.value || localStorage.getItem('audio_tutor_tts_engine') || 'system';
     const voice = document.getElementById('tts-voice')?.value || localStorage.getItem('audio_tutor_tts_voice') || '';
     const rate = parseFloat(document.getElementById('tts-rate')?.value || localStorage.getItem('audio_tutor_tts_rate') || '1.10');
 
@@ -3044,7 +2985,7 @@ class UIController {
     this._isPlayingPreview = true;
     btn.classList.add('playing');
     btn.textContent = '⏹️ 停止試聽';
-    if (statusEl) statusEl.textContent = '🔊 正在播放中文試聽語音...';
+    if (statusEl) statusEl.textContent = `🔊 正在使用 [${engine}] 播放試聽語音...`;
 
     const onFinish = () => {
       this._isPlayingPreview = false;
@@ -3057,10 +2998,11 @@ class UIController {
       if (engine === 'openai') {
         const apiKey = this.apiKeys.getOpenAIKey();
         if (!apiKey) {
-          this._showToast('⚠️ 使用 OpenAI TTS 需要先填入 OpenAI API Key', 'error');
+          this._showToast('⚠️ 試聽 OpenAI TTS 需要先在上方填入 OpenAI API Key', 'error');
           onFinish();
           return;
         }
+        this._showToast(`🤖 正在向 OpenAI 請求 [${voice || 'nova'}] 語音合成...`);
         const blob = await this.ttsService.synthesize(sampleText, { engine: 'openai', voice: voice || 'nova', rate });
         if (blob) {
           const url = URL.createObjectURL(blob);
@@ -3070,8 +3012,11 @@ class UIController {
           audio.onerror = () => { URL.revokeObjectURL(url); onFinish(); };
           await audio.play();
           return;
+        } else {
+          throw new Error('OpenAI 未返回音訊');
         }
       } else if (engine === 'edge') {
+        this._showToast(`✨ 正在合成 Edge-TTS [${voice || 'zh-TW-HsiaoChenNeural'}]...`);
         const blob = await this.ttsService.synthesize(sampleText, { engine: 'edge', voice: voice || 'zh-TW-HsiaoChenNeural', rate });
         if (blob) {
           const url = URL.createObjectURL(blob);
@@ -3081,50 +3026,41 @@ class UIController {
           audio.onerror = () => { URL.revokeObjectURL(url); onFinish(); };
           await audio.play();
           return;
+        } else {
+          this._showToast('⚠️ Edge-TTS 需要本機 server.py 支援。若在 GitHub Pages 上，請切換至「本機系統語音」或「OpenAI TTS」！', 'error');
+          onFinish();
+          return;
         }
+      } else {
+        // System Web Speech API
+        this._speakSampleSpeechSynthesis(sampleText, voice, rate, onFinish);
       }
-
-      if (engine === 'google' || !engine) {
-        // Google Cloud TTS
-        const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=zh-TW&client=tw-ob&q=${encodeURIComponent(sampleText)}`;
-        const audio = new Audio(url);
-        audio.playbackRate = Math.max(0.85, Math.min(1.5, rate));
-        this._previewAudioObj = audio;
-        audio.onended = onFinish;
-        audio.onerror = (e) => {
-          console.warn('Google preview failed, fallback to system voice', e);
-          this._speakSampleSpeechSynthesis(sampleText, voice, rate, onFinish);
-        };
-        await audio.play();
-        return;
-      }
-
-      // System Web Speech API
-      this._speakSampleSpeechSynthesis(sampleText, voice, rate, onFinish);
 
     } catch (err) {
       console.error('Preview TTS failed:', err);
-      this._speakSampleSpeechSynthesis(sampleText, voice, rate, onFinish);
+      this._showToast(`❌ 試聽失敗：${err.message}`, 'error');
+      onFinish();
     }
   }
 
   _speakSampleSpeechSynthesis(text, voiceName, rate, onFinish) {
     if (!window.speechSynthesis) {
+      this._showToast('⚠️ 瀏覽器不支援 Web Speech API', 'error');
       onFinish();
       return;
     }
     window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'zh-TW';
-    utter.rate = Math.max(0.95, Math.min(1.5, rate));
-    utter.pitch = 1.05;
+    utter.rate = Math.max(0.75, Math.min(1.75, rate));
+    utter.pitch = 1.0;
 
     const voices = window.speechSynthesis.getVoices();
     let selected = null;
     if (voiceName) {
       selected = voices.find(v => v.name === voiceName);
     }
-    if (!selected) {
+    if (!selected && voices.length > 0) {
       selected =
         voices.find(v => v.name.includes('Natural') || v.name.includes('Online')) ||
         voices.find(v => v.lang === 'zh-TW' && (v.name.includes('Google') || v.name.includes('國語') || v.name.includes('HsiaoChen') || v.name.includes('曉臻') || v.name.includes('雅婷') || v.name.includes('Hanhan'))) ||
@@ -3134,7 +3070,10 @@ class UIController {
     if (selected) utter.voice = selected;
 
     utter.onend = onFinish;
-    utter.onerror = onFinish;
+    utter.onerror = (e) => {
+      console.warn('SpeechSynthesis error:', e);
+      onFinish();
+    };
     window.speechSynthesis.speak(utter);
   }
 }
