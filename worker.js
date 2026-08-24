@@ -89,7 +89,7 @@ async function handleEdgeTts(request, url) {
 
   const connId = crypto.randomUUID().replace(/-/g, '');
   const reqId = crypto.randomUUID().replace(/-/g, '');
-  const wsUrl = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EA651143B48DA8F676841211&ConnectionId=${connId}`;
+  const wsUrl = `https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EA651143B48DA8F676841211&ConnectionId=${connId}`;
 
   try {
     const resp = await fetch(wsUrl, {
