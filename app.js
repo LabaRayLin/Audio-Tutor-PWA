@@ -874,6 +874,55 @@ ${JSON.stringify(sentences)}
 }
 
 // ─────────────────────────────────────────────────────────────
+// iOS / PWA 背景音訊保活器 (Background Audio Keeper)
+// ─────────────────────────────────────────────────────────────
+class BackgroundAudioKeeper {
+  constructor() {
+    this._audio = null;
+    this._isActive = false;
+    this._init();
+  }
+
+  _init() {
+    if (typeof navigator !== 'undefined' && navigator.audioSession) {
+      try {
+        navigator.audioSession.type = 'playback';
+      } catch (e) {}
+    }
+
+    // 建立 1 秒超微弱靜音音訊 Data URI 作為 iOS 系統背景音訊通道
+    const silentWav = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAP//";
+    try {
+      this._audio = new Audio(silentWav);
+      this._audio.loop = true;
+      this._audio.volume = 0.01;
+    } catch (e) {}
+  }
+
+  start() {
+    if (typeof navigator !== 'undefined' && navigator.audioSession) {
+      try {
+        navigator.audioSession.type = 'playback';
+      } catch (e) {}
+    }
+    if (this._audio && !this._isActive) {
+      this._audio.play().then(() => {
+        this._isActive = true;
+      }).catch(() => {});
+    }
+  }
+
+  stop() {
+    if (this._audio) {
+      try {
+        this._audio.pause();
+      } catch (e) {}
+      this._isActive = false;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // Web Audio API 高精準播放引擎 (AudioBuffer + Micro Fade Envelope)
 // ─────────────────────────────────────────────────────────────
 class AudioTutorPlayer {
@@ -905,7 +954,54 @@ class AudioTutorPlayer {
     this._isStopped = false;
     this._playLoopActive = false;
 
+    this._bgKeeper = new BackgroundAudioKeeper();
+    this._initMediaSessionHandlers();
     this._initAudioBuffer();
+  }
+
+  _updateMediaSession(seg, index) {
+    if (!('mediaSession' in navigator)) return;
+    try {
+      const title = seg ? seg.text : 'Audio Tutor 聽覺沉浸式學習';
+      const artist = `句子 ${index + 1} / ${this.timeline.length}${seg?.cefr ? ' · ' + seg.cefr : ''}`;
+      const album = this.options.title || 'Audio Tutor AI 導覽';
+
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: title,
+        artist: artist,
+        album: album,
+        artwork: [
+          { src: 'icon.svg', sizes: '512x512', type: 'image/svg+xml' }
+        ]
+      });
+      navigator.mediaSession.playbackState = 'playing';
+
+      if ('setPositionState' in navigator.mediaSession && seg && this.audioBuffer) {
+        const totalDur = this.audioBuffer.duration;
+        navigator.mediaSession.setPositionState({
+          duration: Math.max(1, totalDur),
+          playbackRate: 1.0,
+          position: Math.min(seg.start, totalDur)
+        });
+      }
+    } catch (e) {}
+  }
+
+  _initMediaSessionHandlers() {
+    if (!('mediaSession' in navigator)) return;
+    const actions = [
+      ['play', () => this.play()],
+      ['pause', () => this.pause()],
+      ['previoustrack', () => this.skipToPrev()],
+      ['nexttrack', () => this.skipToNext()],
+      ['seekbackward', () => this.replayCurrent()],
+      ['seekforward', () => this.skipToNext()]
+    ];
+    for (const [action, handler] of actions) {
+      try {
+        navigator.mediaSession.setActionHandler(action, handler);
+      } catch (e) {}
+    }
   }
 
   async _initAudioBuffer() {
@@ -930,6 +1026,7 @@ class AudioTutorPlayer {
   }
   
   async play() {
+    this._bgKeeper.start();
     if (this.state === 'paused') {
       this._resume();
       return;
@@ -949,6 +1046,7 @@ class AudioTutorPlayer {
       if (this._isStopped) break;
       
       const seg = this.timeline[this.currentIndex];
+      this._updateMediaSession(seg, this.currentIndex);
       this.onSegmentChange(this.currentIndex, seg);
       
       // 1. 播放原文音訊切片 (Web Audio 毫秒級精準切片 + 淡入淡出)
@@ -979,6 +1077,7 @@ class AudioTutorPlayer {
 
     this._playLoopActive = false;
     if (!this._paused) {
+      this._bgKeeper.stop();
       this._setState('idle');
     }
   }
@@ -987,7 +1086,11 @@ class AudioTutorPlayer {
     this._paused = true;
     this._stopCurrentNode();
     if (window.speechSynthesis) window.speechSynthesis.cancel();
+    this._bgKeeper.stop();
     this._setState('paused');
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = 'paused';
+    }
   }
   
   _resume() {
@@ -1061,6 +1164,9 @@ class AudioTutorPlayer {
   
   _setState(state) {
     this.state = state;
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = (state === 'paused' || state === 'idle') ? 'paused' : 'playing';
+    }
     this.onStateChange(state, this.currentIndex);
   }
   

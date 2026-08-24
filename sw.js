@@ -3,7 +3,7 @@
  * 提供離線快取支援與網路優先策略 (支援 GitHub Pages 與本地端)
  */
 
-const CACHE_NAME = 'audio-tutor-v4.3';
+const CACHE_NAME = 'audio-tutor-v4.6';
 const PRECACHE_ASSETS = [
   './',
   './index.html',
