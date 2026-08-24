@@ -1985,6 +1985,12 @@ class UIController {
       });
     }
 
+    // 試聽 TTS 語音
+    const btnPreviewTts = document.getElementById('btn-preview-tts');
+    if (btnPreviewTts) {
+      btnPreviewTts.addEventListener('click', () => this._handleTtsPreview());
+    }
+
     // CEFR 滑桿
     const cefrSlider = document.getElementById('cefr-slider');
     if (cefrSlider) {
@@ -3006,6 +3012,130 @@ class UIController {
     } catch(e) {
       this._showToast(`刪除失敗：${e.message}`, 'error');
     }
+  }
+
+  async _handleTtsPreview() {
+    const btn = document.getElementById('btn-preview-tts');
+    const statusEl = document.getElementById('tts-preview-status');
+    if (!btn) return;
+
+    if (this._isPlayingPreview) {
+      // 停止試聽
+      if (this._previewAudioObj) {
+        try { this._previewAudioObj.pause(); this._previewAudioObj.src = ''; } catch(e){}
+        this._previewAudioObj = null;
+      }
+      if (window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      this._isPlayingPreview = false;
+      btn.classList.remove('playing');
+      btn.textContent = '▶️ 試聽當前中文語音與語速';
+      if (statusEl) statusEl.textContent = '試聽範例：「歡迎使用 Audio Tutor！我會為你精闢解析英文單字與文法。」';
+      return;
+    }
+
+    const engine = document.getElementById('tts-engine')?.value || localStorage.getItem('audio_tutor_tts_engine') || 'google';
+    const voice = document.getElementById('tts-voice')?.value || localStorage.getItem('audio_tutor_tts_voice') || '';
+    const rate = parseFloat(document.getElementById('tts-rate')?.value || localStorage.getItem('audio_tutor_tts_rate') || '1.10');
+
+    const sampleText = '歡迎使用 Audio Tutor！我會為你精闢解析英文單字與文法。';
+
+    this._isPlayingPreview = true;
+    btn.classList.add('playing');
+    btn.textContent = '⏹️ 停止試聽';
+    if (statusEl) statusEl.textContent = '🔊 正在播放中文試聽語音...';
+
+    const onFinish = () => {
+      this._isPlayingPreview = false;
+      btn.classList.remove('playing');
+      btn.textContent = '▶️ 試聽當前中文語音與語速';
+      if (statusEl) statusEl.textContent = '試聽範例：「歡迎使用 Audio Tutor！我會為你精闢解析英文單字與文法。」';
+    };
+
+    try {
+      if (engine === 'openai') {
+        const apiKey = this.apiKeys.getOpenAIKey();
+        if (!apiKey) {
+          this._showToast('⚠️ 使用 OpenAI TTS 需要先填入 OpenAI API Key', 'error');
+          onFinish();
+          return;
+        }
+        const blob = await this.ttsService.synthesize(sampleText, { engine: 'openai', voice: voice || 'nova', rate });
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          this._previewAudioObj = audio;
+          audio.onended = () => { URL.revokeObjectURL(url); onFinish(); };
+          audio.onerror = () => { URL.revokeObjectURL(url); onFinish(); };
+          await audio.play();
+          return;
+        }
+      } else if (engine === 'edge') {
+        const blob = await this.ttsService.synthesize(sampleText, { engine: 'edge', voice: voice || 'zh-TW-HsiaoChenNeural', rate });
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          this._previewAudioObj = audio;
+          audio.onended = () => { URL.revokeObjectURL(url); onFinish(); };
+          audio.onerror = () => { URL.revokeObjectURL(url); onFinish(); };
+          await audio.play();
+          return;
+        }
+      }
+
+      if (engine === 'google' || !engine) {
+        // Google Cloud TTS
+        const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=zh-TW&client=tw-ob&q=${encodeURIComponent(sampleText)}`;
+        const audio = new Audio(url);
+        audio.playbackRate = Math.max(0.85, Math.min(1.5, rate));
+        this._previewAudioObj = audio;
+        audio.onended = onFinish;
+        audio.onerror = (e) => {
+          console.warn('Google preview failed, fallback to system voice', e);
+          this._speakSampleSpeechSynthesis(sampleText, voice, rate, onFinish);
+        };
+        await audio.play();
+        return;
+      }
+
+      // System Web Speech API
+      this._speakSampleSpeechSynthesis(sampleText, voice, rate, onFinish);
+
+    } catch (err) {
+      console.error('Preview TTS failed:', err);
+      this._speakSampleSpeechSynthesis(sampleText, voice, rate, onFinish);
+    }
+  }
+
+  _speakSampleSpeechSynthesis(text, voiceName, rate, onFinish) {
+    if (!window.speechSynthesis) {
+      onFinish();
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'zh-TW';
+    utter.rate = Math.max(0.95, Math.min(1.5, rate));
+    utter.pitch = 1.05;
+
+    const voices = window.speechSynthesis.getVoices();
+    let selected = null;
+    if (voiceName) {
+      selected = voices.find(v => v.name === voiceName);
+    }
+    if (!selected) {
+      selected =
+        voices.find(v => v.name.includes('Natural') || v.name.includes('Online')) ||
+        voices.find(v => v.lang === 'zh-TW' && (v.name.includes('Google') || v.name.includes('國語') || v.name.includes('HsiaoChen') || v.name.includes('曉臻') || v.name.includes('雅婷') || v.name.includes('Hanhan'))) ||
+        voices.find(v => v.lang === 'zh-TW' || v.lang === 'cmn-Hant-TW') ||
+        voices.find(v => v.lang.startsWith('zh'));
+    }
+    if (selected) utter.voice = selected;
+
+    utter.onend = onFinish;
+    utter.onerror = onFinish;
+    window.speechSynthesis.speak(utter);
   }
 }
 
