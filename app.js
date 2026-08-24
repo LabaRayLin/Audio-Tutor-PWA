@@ -42,13 +42,14 @@ class StorageManager {
   
   async saveSession(session) {
     const db = await this.openDB();
-    return new Promise((resolve, reject) => {
+    await new Promise((resolve, reject) => {
       const transaction = db.transaction(['sessions'], 'readwrite');
       const store = transaction.objectStore('sessions');
       const request = store.put(session);
       request.onsuccess = () => resolve();
       request.onerror = (e) => reject(e.target.error);
     });
+    this._enforceStorageQuota().catch(() => {});
   }
   
   async loadSession(id) {
@@ -79,13 +80,74 @@ class StorageManager {
   
   async deleteSession(id) {
     const db = await this.openDB();
-    return new Promise((resolve, reject) => {
+    await new Promise((resolve, reject) => {
       const transaction = db.transaction(['sessions'], 'readwrite');
       const store = transaction.objectStore('sessions');
       const request = store.delete(id);
       request.onsuccess = () => resolve();
       request.onerror = (e) => reject(e.target.error);
     });
+    await this.deleteAudio(id);
+  }
+
+  async deleteAudio(name) {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.getDirectory) {
+        const root = await navigator.storage.getDirectory();
+        await root.removeEntry(`audio-tutor-${name}`);
+      }
+    } catch(e) {}
+
+    try {
+      const db = await this.openDB();
+      return new Promise((resolve) => {
+        const transaction = db.transaction(['audioFallback'], 'readwrite');
+        const store = transaction.objectStore('audioFallback');
+        const req = store.delete(name);
+        req.onsuccess = () => resolve();
+        req.onerror = () => resolve();
+      });
+    } catch(e) {}
+  }
+
+  /**
+   * 智慧 LRU 儲存配額管理 (防止 OPFS 與 IndexedDB 容量爆滿)
+   */
+  async _enforceStorageQuota(maxSessions = 15, maxTtsCacheItems = 200) {
+    try {
+      // 1. LRU 清理過期的學習單集音訊與紀錄 (只保留最近 15 筆)
+      const sessions = await this.listSessions();
+      if (sessions && sessions.length > maxSessions) {
+        const toDelete = sessions.slice(maxSessions);
+        for (const s of toDelete) {
+          await this.deleteSession(s.id);
+          console.log(`[StorageManager] LRU 自動清理過期單集: ${s.fileName} (${s.id})`);
+        }
+      }
+
+      // 2. 清理過多 TTS 快取
+      const db = await this.openDB();
+      const transaction = db.transaction(['ttsCache'], 'readwrite');
+      const store = transaction.objectStore('ttsCache');
+      const countReq = store.count();
+      countReq.onsuccess = () => {
+        if (countReq.result > maxTtsCacheItems) {
+          const openCursor = store.openCursor();
+          let deleted = 0;
+          const targetDelete = Math.floor(countReq.result - maxTtsCacheItems / 2);
+          openCursor.onsuccess = (e) => {
+            const cursor = e.target.result;
+            if (cursor && deleted < targetDelete) {
+              cursor.delete();
+              deleted++;
+              cursor.continue();
+            }
+          };
+        }
+      };
+    } catch (e) {
+      console.warn('[StorageManager] 配額清理例外：', e);
+    }
   }
   
   async saveAudio(blob, name) {
@@ -483,6 +545,14 @@ class AudioPipeline {
       'jan.', 'feb.', 'mar.', 'apr.', 'jun.', 'jul.', 'aug.', 'sept.', 'oct.', 'nov.', 'dec.'
     ]);
 
+    // 1. 不應作為句子結尾的連接詞、介系詞與語法引導詞 (語法邊界保護)
+    const NO_SPLIT_WORDS = new Set([
+      'and', 'but', 'or', 'so', 'because', 'although', 'though', 'if', 'when', 'while', 
+      'that', 'which', 'who', 'whom', 'whose', 'where', 'with', 'to', 'of', 'in', 'on', 'at', 
+      'for', 'about', 'as', 'than', 'into', 'through', 'after', 'before', 'since', 'until', 'till',
+      'neither', 'nor', 'either', 'whether', 'like', 'from', 'by'
+    ]);
+
     const isSentenceEnd = (w, nextW) => {
       const trimmed = (w || '').trim();
       if (!trimmed) return false;
@@ -520,17 +590,20 @@ class AudioPipeline {
 
       const dur = currentWords[currentWords.length - 1].end - currentWords[0].start;
       const isPunctEnd = isSentenceEnd(w.word, nextW);
-      
-      // 語音停頓檢測：若單字間距超過 0.50 秒且已有足夠長度，切分
-      const hasLongPause = nextW && (nextW.start - w.end > 0.50) && dur >= 1.2;
 
-      // 若下一個字以大寫開頭，且當前字帶標點或有呼吸停頓 (>0.20s)，適時分句
+      const lowerWord = (w.word || '').toLowerCase().replace(/[^a-z]/g, '');
+      const isProtectedBoundary = NO_SPLIT_WORDS.has(lowerWord);
+      
+      // 語音停頓檢測：若單字間距超過 0.50 秒且已有足夠長度，切分 (若為連接詞/介系詞則保護不切分)
+      const hasLongPause = nextW && (nextW.start - w.end > 0.50) && dur >= 1.2 && !isProtectedBoundary;
+
+      // 若下一個字以大寫開頭，且當前字帶標點或有呼吸停頓 (>0.20s)，適時分句 (避開受保護連接詞)
       const isNextClause = nextW && isCapitalizedStart(nextW.word) &&
         (w.word.includes(',') || w.word.includes(';') || (nextW.start - w.end > 0.20)) &&
-        dur >= 2.0;
+        dur >= 2.0 && !isProtectedBoundary;
 
-      // 超長句子保護：若無句號超過 9.5 秒，在逗號或停頓處平滑斷開
-      const isOverlong = dur > 9.5 && (w.word.includes(',') || w.word.includes(';') || (nextW && nextW.start - w.end > 0.25));
+      // 超長句子保護：若無句號超過 9.5 秒，在逗號或停頓處平滑斷開，避開受保護詞
+      const isOverlong = dur > 9.5 && (w.word.includes(',') || w.word.includes(';') || (nextW && nextW.start - w.end > 0.25)) && !isProtectedBoundary;
 
       if (isPunctEnd || hasLongPause || isNextClause || isOverlong || i === words.length - 1) {
         if (currentWords.length > 0) {
@@ -830,50 +903,86 @@ class AudioPipeline {
     return 'gemini-3.5-flash-lite';
   }
 
-  async analyzeWithGemini(segments, sourceLang = 'en') {
-    this.onProgress('analyze', 0, '開始語意解析...');
-    const BATCH_SIZE = 10;
-    const results = [];
-    
+  async analyzeWithGeminiStream(segments, sourceLang = 'en', onBatchReady = null) {
+    this.onProgress('analyze', 0, '開始智慧語意解析...');
+    const BATCH_SIZE = 8;
+    const enriched = segments.map(seg => ({
+      ...seg,
+      explanation: '',
+      cefr: 'B1'
+    }));
+
     for (let i = 0; i < segments.length; i += BATCH_SIZE) {
       const batch = segments.slice(i, i + BATCH_SIZE);
       const batchNum = Math.floor(i / BATCH_SIZE) + 1;
       const totalBatches = Math.ceil(segments.length / BATCH_SIZE);
-      this.onProgress('analyze', Math.round((i / segments.length) * 100), `解析第 ${batchNum}/${totalBatches} 批...`);
-      
+      const pct = Math.round((i / segments.length) * 100);
+      this.onProgress('analyze', pct, `正在解析語意 (第 ${batchNum}/${totalBatches} 批)...`);
+
       const explanations = await this._explainBatch(batch, i, sourceLang);
-      results.push(...explanations);
+      
+      explanations.forEach((item, bIdx) => {
+        const globalIdx = i + bIdx;
+        if (enriched[globalIdx]) {
+          enriched[globalIdx].explanation = item.explanation || '';
+          enriched[globalIdx].cefr = item.cefr || 'B1';
+        }
+      });
+
+      if (onBatchReady) {
+        onBatchReady({
+          batchIndex: batchNum,
+          totalBatches,
+          processedCount: Math.min(i + BATCH_SIZE, segments.length),
+          totalCount: segments.length,
+          enrichedSegments: enriched
+        });
+      }
     }
-    
-    const enriched = segments.map((seg, idx) => ({
-      ...seg,
-      explanation: results[idx]?.explanation || '',
-      cefr: results[idx]?.cefr || 'B1'
-    }));
-    
-    this.onProgress('analyze', 100, `解析完成，共 ${enriched.length} 句`);
+
+    this.onProgress('analyze', 100, `語意解析完成，共 ${enriched.length} 句`);
     return enriched;
+  }
+
+  async analyzeWithGemini(segments, sourceLang = 'en') {
+    return this.analyzeWithGeminiStream(segments, sourceLang);
   }
   
   async _explainBatch(batch, startIdx, sourceLang) {
     const sentences = batch.map((s, i) => ({ id: startIdx + i + 1, text: s.text }));
+    
+    // 1. 將整批文本組合成段落，提供給 AI 作為上下文參考 (解決代名詞與脈絡斷裂問題)
+    const paragraphContext = batch.map(s => s.text).join(' ');
+
     const langMap = {
       'en': '英文', 'ja': '日文', 'ko': '韓文', 'es': '西班牙文', 'fr': '法文', 'de': '德文'
     };
     const langName = langMap[sourceLang] || '外語';
     
-    const prompt = `你是一位專業的${langName}聽力教練。請針對下列${langName}句子清單，逐句提供適合「用語音聽」的簡要繁體中文講解。
-講解規則：
-1. 語氣自然、口語化，適合 TTS 朗讀。
-2. 包含：一句中文精準意譯 + 1個關鍵單字/片語解析。
-3. 總長度控制在 20~40 字以內，避免冗長。
-4. 為每個句子標注 CEFR 難度等級（A1/A2/B1/B2/C1/C2）。
+    const prompt = `你是一位專業且熱情的${langName}聽力教練，正在錄製 Podcast 教學。
+請根據下方的【完整上下文語境】，針對【目標句子清單】逐句提供適合「用語音朗讀」的繁體中文講解。
 
-輸入句子：
+【完整上下文語境】（請參考此段落來確保翻譯連貫，代名詞精確）：
+"${paragraphContext}"
+
+【目標句子清單】：
 ${JSON.stringify(sentences)}
 
-請輸出 JSON 陣列：
-[{ "id": 1, "explanation": "這句話意思是...，重點片語是...代表...", "cefr": "B1" }]`;
+【輸出規則與 TTS 朗讀技巧】：
+1. 語氣必須像真人廣播主持人口語自然。請用「這句話的意思是……」或「這裡提到……」作為開頭。
+2. 句型結構：[口語化的精準意譯] + [中文句號。] + [視情況補充1個核心單字或俚語解析]。
+3. 若句子很簡單（A1/A2），只需翻譯即可，不用硬擠單字解析；若是 B1 以上，請挑出一個最難的單字/片語進行解析。
+4. 為了讓 TTS 語音發音自然，請善用全形逗號「，」與句號「。」來控制停頓節奏。
+5. 單句總字數控制在 30～60 字之間。
+6. 必須嚴格輸出以下 JSON 陣列格式，不可包含 Markdown 標記：
+
+[
+  { 
+    "id": 1, 
+    "explanation": "這句話的意思是，他因為下雨而取消了會議。其中，call off 是一個很實用的片語，代表取消的意思。", 
+    "cefr": "B1" 
+  }
+]`;
     
     const primaryModel = await this._getAvailableGeminiModel();
     const candidateModels = [
@@ -986,6 +1095,53 @@ class BackgroundAudioKeeper {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 螢幕常亮保活管理器 (Screen Wake Lock Manager)
+// ─────────────────────────────────────────────────────────────
+class ScreenWakeLockManager {
+  constructor() {
+    this._wakeLock = null;
+    this._shouldKeepAwake = false;
+    this._initVisibilityListener();
+  }
+
+  _initVisibilityListener() {
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState === 'visible' && this._shouldKeepAwake) {
+          await this.acquire();
+        }
+      });
+    }
+  }
+
+  async acquire() {
+    this._shouldKeepAwake = true;
+    if (typeof navigator !== 'undefined' && 'wakeLock' in navigator) {
+      try {
+        if (!this._wakeLock) {
+          this._wakeLock = await navigator.wakeLock.request('screen');
+          this._wakeLock.addEventListener('release', () => {
+            this._wakeLock = null;
+          });
+        }
+      } catch (err) {
+        console.warn('[WakeLock] 請求失敗 (可能受低電量模式限制):', err);
+      }
+    }
+  }
+
+  async release() {
+    this._shouldKeepAwake = false;
+    if (this._wakeLock) {
+      try {
+        await this._wakeLock.release();
+        this._wakeLock = null;
+      } catch (err) {}
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 // Web Audio API 高精準播放引擎 (AudioBuffer + Micro Fade Envelope)
 // ─────────────────────────────────────────────────────────────
 class AudioTutorPlayer {
@@ -998,6 +1154,8 @@ class AudioTutorPlayer {
     
     this.options = {
       replayOriginal: options.replayOriginal !== false,
+      loopCurrentSentence: Boolean(options.loopCurrentSentence || false),
+      origRate: options.origRate || 1.0,
       ttsEngine: options.ttsEngine || 'edge',
       ttsVoice: options.ttsVoice || 'zh-TW-HsiaoChenNeural',
       ttsRate: options.ttsRate || 1.0,
@@ -1016,10 +1174,26 @@ class AudioTutorPlayer {
     this._pauseResolve = null;
     this._isStopped = false;
     this._playLoopActive = false;
+    this.isStreaming = false;
 
     this._bgKeeper = new BackgroundAudioKeeper();
+    this._wakeLock = new ScreenWakeLockManager();
     this._initMediaSessionHandlers();
     this._initAudioBuffer();
+  }
+
+  setStreaming(isStreaming) {
+    this.isStreaming = !!isStreaming;
+  }
+
+  updateTimeline(newTimeline) {
+    if (!newTimeline || newTimeline.length === 0) return;
+    this.timeline = newTimeline;
+    if (this.currentIndex < this.timeline.length) {
+      const seg = this.timeline[this.currentIndex];
+      this._updateMediaSession(seg, this.currentIndex);
+      this.onSegmentChange(this.currentIndex, seg);
+    }
   }
 
   _updateMediaSession(seg, index) {
@@ -1104,13 +1278,45 @@ class AudioTutorPlayer {
   async _playLoop() {
     this._playLoopActive = true;
 
-    while (this.currentIndex < this.timeline.length && !this._isStopped) {
+    while (!this._isStopped) {
       if (this._paused) { await this._waitForResume(); }
       if (this._isStopped) break;
+
+      // 若當前進度已達或超過現有句子總數
+      if (this.currentIndex >= this.timeline.length) {
+        // 如果背景還在流式解析新批次，平滑等待新句子送達 (等待 400ms 後重試)
+        if (this.isStreaming) {
+          await new Promise(r => setTimeout(r, 400));
+          continue;
+        } else {
+          // 全集解析且播放完畢
+          break;
+        }
+      }
       
       const seg = this.timeline[this.currentIndex];
       this._updateMediaSession(seg, this.currentIndex);
       this.onSegmentChange(this.currentIndex, seg);
+
+      // 🚀 TTS 預先快取 (Pre-fetching / Zero-Latency): 在播放原音的同時，背景提早合成當前與下一句的中文講解音訊
+      if (this.shouldExplain(seg) && seg.explanation && this.ttsService) {
+        this.ttsService.synthesize(seg.explanation, {
+          engine: this.options.ttsEngine,
+          voice: this.options.ttsVoice,
+          rate: this.options.ttsRate
+        }).catch(() => {});
+      }
+
+      if (this.currentIndex + 1 < this.timeline.length) {
+        const nextSeg = this.timeline[this.currentIndex + 1];
+        if (this.shouldExplain(nextSeg) && nextSeg.explanation && this.ttsService) {
+          this.ttsService.synthesize(nextSeg.explanation, {
+            engine: this.options.ttsEngine,
+            voice: this.options.ttsVoice,
+            rate: this.options.ttsRate
+          }).catch(() => {});
+        }
+      }
       
       // 1. 播放原文音訊切片 (Web Audio 毫秒級精準切片 + 淡入淡出)
       this._setState('playing_original');
@@ -1135,6 +1341,13 @@ class AudioTutorPlayer {
       }
       
       if (this._isStopped) break;
+
+      // 4. 檢查是否開啟單句無限循環跟讀模式 (A-B Looping / Shadowing)
+      if (this.options.loopCurrentSentence) {
+        await new Promise(r => setTimeout(r, 800)); // 給予 0.8 秒跟讀緩衝
+        continue; // 重新循環播放當前句
+      }
+
       this.currentIndex++;
     }
 
@@ -1192,6 +1405,21 @@ class AudioTutorPlayer {
       this._playLoop();
     }
   }
+
+  async jumpToIndex(targetIndex) {
+    if (targetIndex < 0 || targetIndex >= this.timeline.length) return;
+    this._stopCurrentNode();
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    this.currentIndex = targetIndex;
+    this._paused = false;
+    if (this._pauseResolve) {
+      this._pauseResolve();
+      this._pauseResolve = null;
+    }
+    if (!this._playLoopActive) {
+      this._playLoop();
+    }
+  }
   
   async skipToNext() {
     this._stopCurrentNode();
@@ -1224,9 +1452,19 @@ class AudioTutorPlayer {
       this._playLoop();
     }
   }
+
+  toggleLoopCurrentSentence() {
+    this.options.loopCurrentSentence = !this.options.loopCurrentSentence;
+    return this.options.loopCurrentSentence;
+  }
   
   _setState(state) {
     this.state = state;
+    if (state === 'idle' || state === 'paused') {
+      if (this._wakeLock) this._wakeLock.release();
+    } else {
+      if (this._wakeLock) this._wakeLock.acquire();
+    }
     if ('mediaSession' in navigator) {
       navigator.mediaSession.playbackState = (state === 'paused' || state === 'idle') ? 'paused' : 'playing';
     }
@@ -1250,20 +1488,24 @@ class AudioTutorPlayer {
       const totalDur = this.audioBuffer.duration;
       const validStart = Math.max(0, Math.min(start, totalDur - 0.05));
       const validEnd = Math.max(validStart + 0.05, Math.min(end, totalDur));
-      const dur = validEnd - validStart;
+      const rawDur = validEnd - validStart;
+      const origRate = Math.max(0.5, Math.min(2.0, this.options.origRate || 1.0));
 
       const source = this.audioCtx.createBufferSource();
       source.buffer = this.audioBuffer;
+      source.playbackRate.value = origRate;
+
       const gainNode = this.audioCtx.createGain();
 
       const now = this.audioCtx.currentTime;
-      const fadeDur = Math.min(0.035, dur / 4);
+      const realDur = rawDur / origRate;
+      const fadeDur = Math.min(0.035, realDur / 4);
 
-      // Micro Fade-in & Fade-out 消除接縫與雜音
+      // Micro Fade-in & Fade-out 消除接縫與雜音 (依實際語速縮放包絡線)
       gainNode.gain.setValueAtTime(0.0001, now);
       gainNode.gain.exponentialRampToValueAtTime(1.0, now + fadeDur);
-      gainNode.gain.setValueAtTime(1.0, Math.max(now + fadeDur, now + dur - fadeDur));
-      gainNode.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+      gainNode.gain.setValueAtTime(1.0, Math.max(now + fadeDur, now + realDur - fadeDur));
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, now + realDur);
 
       source.connect(gainNode);
       gainNode.connect(this.audioCtx.destination);
@@ -1287,8 +1529,8 @@ class AudioTutorPlayer {
       };
 
       source.onended = finish;
-      source.start(now, validStart, dur);
-      timer = setTimeout(finish, (dur + 0.2) * 1000);
+      source.start(now, validStart, rawDur);
+      timer = setTimeout(finish, (realDur + 0.2) * 1000);
     });
   }
   
@@ -1437,6 +1679,9 @@ class AudioTutorPlayer {
   destroy() {
     this._isStopped = true;
     this._stopCurrentNode();
+    if (this._wakeLock) {
+      this._wakeLock.release();
+    }
     if (this.audioCtx) {
       try { this.audioCtx.close(); } catch(e){}
     }
@@ -1831,6 +2076,96 @@ class PodcastManager {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// PWA 安裝至桌面管理器 (Add to Home Screen Manager)
+// ─────────────────────────────────────────────────────────────
+class PwaInstallManager {
+  constructor() {
+    this.deferredPrompt = null;
+    this.isStandalone = false;
+    this.isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    this._checkStandalone();
+    this._init();
+  }
+
+  _checkStandalone() {
+    if (typeof window !== 'undefined') {
+      this.isStandalone = 
+        window.matchMedia('(display-mode: standalone)').matches ||
+        window.navigator.standalone === true ||
+        document.referrer.includes('android-app://');
+    }
+  }
+
+  _init() {
+    if (this.isStandalone) {
+      console.log('[PWA] 目前已在獨立全螢幕 App 模式中執行');
+      return;
+    }
+
+    // 攔截 Chromium / Android / Edge / Desktop Chrome 安裝事件
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      this.deferredPrompt = e;
+      this.showInstallUI();
+    });
+
+    // 監聽安裝完成事件
+    window.addEventListener('appinstalled', () => {
+      this.deferredPrompt = null;
+      this.hideInstallUI();
+      console.log('[PWA] Audio Tutor 已成功安裝至桌面！');
+    });
+
+    // iOS 裝置且未安裝時，若使用者尚未手動關閉過，提示安裝引導
+    if (this.isIos && !this.isStandalone) {
+      const dismissed = localStorage.getItem('audio_tutor_a2hs_dismissed');
+      if (!dismissed) {
+        setTimeout(() => this.showInstallUI(true), 1200);
+      }
+    }
+  }
+
+  showInstallUI(isIos = false) {
+    if (this.isStandalone) return;
+    const banner = document.getElementById('pwa-install-banner');
+    const headerBtn = document.getElementById('btn-header-install');
+    if (headerBtn) headerBtn.classList.remove('hidden');
+
+    const dismissed = localStorage.getItem('audio_tutor_a2hs_dismissed');
+    if (banner && !dismissed) {
+      banner.classList.remove('hidden');
+    }
+  }
+
+  hideInstallUI() {
+    const banner = document.getElementById('pwa-install-banner');
+    const headerBtn = document.getElementById('btn-header-install');
+    if (banner) banner.classList.add('hidden');
+    if (headerBtn) headerBtn.classList.add('hidden');
+  }
+
+  async promptInstall() {
+    if (this.deferredPrompt) {
+      this.deferredPrompt.prompt();
+      const choiceResult = await this.deferredPrompt.userChoice;
+      console.log(`[PWA] 使用者安裝選擇: ${choiceResult.outcome}`);
+      if (choiceResult.outcome === 'accepted') {
+        this.hideInstallUI();
+      }
+      this.deferredPrompt = null;
+    } else if (this.isIos) {
+      // 彈出 iOS 專屬圖文步驟導引 Modal
+      const modal = document.getElementById('ios-install-modal');
+      if (modal) modal.classList.remove('hidden');
+    } else {
+      // 其他瀏覽器提示
+      const modal = document.getElementById('ios-install-modal');
+      if (modal) modal.classList.remove('hidden');
+    }
+  }
+}
+
 class UIController {
   constructor() {
     this.apiKeys = new ApiKeyManager();
@@ -1857,11 +2192,45 @@ class UIController {
 
   _registerSW() {
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(e => console.warn('SW registration failed', e));
+      navigator.serviceWorker.register('./sw.js').catch(e => console.warn('SW registration failed', e));
     }
   }
   
   _bindUI() {
+    // ─────────────────────────────────────────────────────────
+    // 0. PWA A2HS 安裝至桌面引導
+    // ─────────────────────────────────────────────────────────
+    this.pwaInstaller = new PwaInstallManager();
+
+    const btnHeaderInstall = document.getElementById('btn-header-install');
+    if (btnHeaderInstall) {
+      btnHeaderInstall.addEventListener('click', () => this.pwaInstaller.promptInstall());
+    }
+
+    const btnBannerInstall = document.getElementById('btn-banner-install');
+    if (btnBannerInstall) {
+      btnBannerInstall.addEventListener('click', () => this.pwaInstaller.promptInstall());
+    }
+
+    const btnBannerDismiss = document.getElementById('btn-banner-dismiss');
+    if (btnBannerDismiss) {
+      btnBannerDismiss.addEventListener('click', () => {
+        document.getElementById('pwa-install-banner')?.classList.add('hidden');
+        localStorage.setItem('audio_tutor_a2hs_dismissed', 'true');
+      });
+    }
+
+    const btnCloseIos = document.getElementById('btn-close-ios-install');
+    const btnConfirmIos = document.getElementById('btn-confirm-ios-install');
+    [btnCloseIos, btnConfirmIos].forEach(btn => {
+      if (btn) {
+        btn.addEventListener('click', () => {
+          document.getElementById('ios-install-modal')?.classList.add('hidden');
+          localStorage.setItem('audio_tutor_a2hs_dismissed', 'true');
+        });
+      }
+    });
+
     // ─────────────────────────────────────────────────────────
     // 1. 置底 App 導覽列切換 (Bottom Navigation Bar)
     // ─────────────────────────────────────────────────────────
@@ -1971,6 +2340,62 @@ class UIController {
     const btnReplay = document.getElementById('btn-replay');
     if (btnReplay) btnReplay.addEventListener('click', () => this.player?.replayCurrent());
 
+    // 單句循環跟讀開關 (Shadowing / A-B Looping)
+    const btnToggleLoop = document.getElementById('btn-toggle-loop');
+    const toggleLoopSentence = document.getElementById('toggle-loop-sentence');
+
+    const updateLoopUI = (isLooping) => {
+      if (btnToggleLoop) {
+        btnToggleLoop.classList.toggle('active', isLooping);
+        btnToggleLoop.setAttribute('title', isLooping ? '🔂 單句循環中 (點擊切換為整篇循序播放)' : '🔁 開啟單句無限循環跟讀 (快捷鍵 L)');
+      }
+      if (toggleLoopSentence) toggleLoopSentence.checked = isLooping;
+      localStorage.setItem('audio_tutor_loop_sentence', isLooping ? 'true' : 'false');
+      if (this.player) this.player.updateOptions({ loopCurrentSentence: isLooping });
+    };
+
+    if (btnToggleLoop) {
+      btnToggleLoop.addEventListener('click', () => {
+        const isLooping = this.player ? this.player.toggleLoopCurrentSentence() : (localStorage.getItem('audio_tutor_loop_sentence') === 'true' ? false : true);
+        updateLoopUI(isLooping);
+        this._showToast(isLooping ? '🔂 已開啟「單句無限循環跟讀」模式' : '➡️ 已恢復「整篇循序播放」模式', 'info');
+      });
+    }
+
+    if (toggleLoopSentence) {
+      toggleLoopSentence.checked = localStorage.getItem('audio_tutor_loop_sentence') === 'true';
+      toggleLoopSentence.addEventListener('change', (e) => {
+        updateLoopUI(e.target.checked);
+        this._showToast(e.target.checked ? '🔂 已開啟「單句無限循環跟讀」模式' : '➡️ 已恢復「整篇循序播放」模式', 'info');
+      });
+    }
+
+    // 雙擊頂部原文單字開啟應用內字典 (不跳出 PWA)
+    const topOrigText = document.getElementById('original-text');
+    if (topOrigText) {
+      topOrigText.addEventListener('dblclick', (e) => {
+        const sel = window.getSelection()?.toString().trim();
+        const cleanWord = (sel || '').replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '');
+        if (cleanWord) {
+          this._lookupWord(cleanWord);
+        }
+      });
+    }
+
+    // 應用內字典彈窗關閉按鈕與背景點擊
+    const btnCloseDict = document.getElementById('btn-close-dict');
+    const btnDoneDict = document.getElementById('btn-done-dict');
+    [btnCloseDict, btnDoneDict].forEach(b => {
+      if (b) b.addEventListener('click', () => this._closeDictModal());
+    });
+
+    const dictModal = document.getElementById('dict-modal');
+    if (dictModal) {
+      dictModal.addEventListener('click', (e) => {
+        if (e.target === dictModal) this._closeDictModal();
+      });
+    }
+
     // 下載彈窗按鈕
     const btnCloseModal = document.getElementById('btn-close-download-modal');
     btnCloseModal?.addEventListener('click', () => this._closeDownloadModal());
@@ -2065,6 +2490,43 @@ class UIController {
       });
     }
     
+    // 原音播放語速滑桿
+    const origRate = document.getElementById('orig-rate');
+    if (origRate) {
+      const origRateLabel = document.getElementById('orig-rate-label');
+      origRate.addEventListener('input', e => {
+        const val = parseFloat(e.target.value).toFixed(2);
+        if (origRateLabel) origRateLabel.textContent = val;
+        localStorage.setItem('audio_tutor_orig_rate', e.target.value);
+        const quickSpeedBtn = document.getElementById('btn-quick-speed');
+        if (quickSpeedBtn) quickSpeedBtn.textContent = `${parseFloat(val).toFixed(1)}x`;
+        if (this.player) this.player.updateOptions({ origRate: parseFloat(e.target.value) });
+      });
+    }
+
+    // 播放器快速切換語速膠囊按鈕 (循環切換: 1.0x -> 0.8x -> 0.9x -> 1.1x -> 1.2x)
+    const btnQuickSpeed = document.getElementById('btn-quick-speed');
+    if (btnQuickSpeed) {
+      const speedCycle = [1.0, 0.8, 0.9, 1.1, 1.2];
+      btnQuickSpeed.addEventListener('click', () => {
+        const cur = parseFloat(localStorage.getItem('audio_tutor_orig_rate') || '1.00');
+        let nextIdx = speedCycle.findIndex(s => Math.abs(s - cur) < 0.04) + 1;
+        if (nextIdx >= speedCycle.length || nextIdx < 0) nextIdx = 0;
+        const nextSpeed = speedCycle[nextIdx];
+
+        localStorage.setItem('audio_tutor_orig_rate', nextSpeed.toFixed(2));
+        btnQuickSpeed.textContent = `${nextSpeed.toFixed(1)}x`;
+
+        const origRateEl = document.getElementById('orig-rate');
+        const origRateLabel = document.getElementById('orig-rate-label');
+        if (origRateEl) origRateEl.value = nextSpeed.toFixed(2);
+        if (origRateLabel) origRateLabel.textContent = nextSpeed.toFixed(2);
+
+        if (this.player) this.player.updateOptions({ origRate: nextSpeed });
+        this._showToast(`🎵 英文原音語速已切換為 ${nextSpeed.toFixed(1)}x`);
+      });
+    }
+
     // TTS 語速
     const ttsRate = document.getElementById('tts-rate');
     if (ttsRate) {
@@ -2111,6 +2573,51 @@ class UIController {
         localStorage.setItem('audio_tutor_source_lang', e.target.value);
       });
     }
+
+    // ─────────────────────────────────────────────────────────
+    // 6. 全局鍵盤快捷鍵支援 (Power User Shortcuts)
+    // ─────────────────────────────────────────────────────────
+    document.addEventListener('keydown', (e) => {
+      // 僅在播放器存在且使用者不是在表單輸入框內打字時觸發
+      if (!this.player) return;
+      const targetTag = e.target.tagName;
+      if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT' || e.target.isContentEditable) {
+        return;
+      }
+
+      switch (e.code) {
+        case 'Space':
+          e.preventDefault();
+          if (this.player.state === 'paused' || this.player.state === 'idle') {
+            this.player.play();
+          } else {
+            this.player.pause();
+          }
+          break;
+        case 'ArrowRight':
+        case 'KeyJ':
+          e.preventDefault();
+          this.player.skipToNext();
+          break;
+        case 'ArrowLeft':
+        case 'KeyK':
+          e.preventDefault();
+          this.player.skipToPrev();
+          break;
+        case 'KeyR':
+          e.preventDefault();
+          this.player.replayCurrent();
+          break;
+        case 'KeyL':
+          e.preventDefault();
+          if (this.player) {
+            const isLooping = this.player.toggleLoopCurrentSentence();
+            updateLoopUI(isLooping);
+            this._showToast(isLooping ? '🔂 已開啟「單句無限循環跟讀」模式' : '➡️ 已恢復「整篇循序播放」模式', 'info');
+          }
+          break;
+      }
+    });
   }
 
   switchTab(tabName) {
@@ -2452,6 +2959,14 @@ class UIController {
     const langEl = document.getElementById('source-lang');
     if (langEl) langEl.value = lang;
     
+    const origRate = localStorage.getItem('audio_tutor_orig_rate') || '1.00';
+    const origRateEl = document.getElementById('orig-rate');
+    const origRateLabel = document.getElementById('orig-rate-label');
+    if (origRateEl) origRateEl.value = origRate;
+    if (origRateLabel) origRateLabel.textContent = parseFloat(origRate).toFixed(2);
+    const quickSpeedBtn = document.getElementById('btn-quick-speed');
+    if (quickSpeedBtn) quickSpeedBtn.textContent = `${parseFloat(origRate).toFixed(1)}x`;
+
     const rateEl = document.getElementById('tts-rate');
     const ttsRateLabel = document.getElementById('tts-rate-label');
     if (rateEl) rateEl.value = rate;
@@ -2707,6 +3222,18 @@ class UIController {
     const origBuffer = await tempCtx.decodeAudioData(originalArrayBuffer);
     tempCtx.close();
 
+    // 🛡️ 行動裝置記憶體熔斷安全守衛 (防止超長音訊在 iOS Safari / Android 上導致 OOM 閃退)
+    const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+    const estimatedTotalDur = origBuffer.duration * 1.5;
+    if (estimatedTotalDur > 900 && isMobile) {
+      const confirmed = window.confirm(
+        `⚠️ 這集 Podcast 預估合成長度約 ${Math.round(estimatedTotalDur / 60)} 分鐘。\n\n在手機瀏覽器中渲染超長無損音訊會消耗大量記憶體，可能導致 App 閃退。\n建議在電腦版瀏覽器中匯出，或直接在 App 內線上聆聽。\n\n是否仍要繼續執行匯出？`
+      );
+      if (!confirmed) {
+        throw new Error('使用者已取消匯出');
+      }
+    }
+
     const sampleRate = origBuffer.sampleRate || 24000;
     const numChannels = Math.min(2, origBuffer.numberOfChannels || 1);
 
@@ -2933,24 +3460,68 @@ class UIController {
       }
       this._completeStage('transcribe');
       
-      // Stage 3: Gemini 語意解析
+      // Stage 3: Gemini 語意解析 (邊算邊播 / Progressive Streaming)
       this._activateStage('analyze');
-      const enrichedSegments = await pipeline.analyzeWithGemini(segments, sourceLang);
-      this._completeStage('analyze');
       
-      // 存檔
+      const sessionId = Date.now().toString();
+      await this.storage.saveAudio(audioBlob, sessionId);
+
+      const initialEnriched = segments.map(s => ({ ...s, explanation: '', cefr: 'B1' }));
       const session = {
-        id: Date.now().toString(),
+        id: sessionId,
         fileName: file.name,
         date: new Date().toISOString(),
-        segments: enrichedSegments
+        segments: initialEnriched
       };
-      
-      await this.storage.saveSession(session);
-      await this.storage.saveAudio(audioBlob, session.id);
       this.currentSession = session;
-      
-      this._initPlayer(audioBlob, enrichedSegments, file.name);
+
+      let playerStarted = false;
+
+      const finalSegments = await pipeline.analyzeWithGeminiStream(
+        segments,
+        sourceLang,
+        async ({ batchIndex, totalBatches, processedCount, totalCount, enrichedSegments }) => {
+          session.segments = [...enrichedSegments];
+          this.storage.saveSession(session).catch(() => {});
+
+          // 第一批解析完成 (前 8 句)，立刻啟動播放器讓使用者開始聽！
+          if (!playerStarted) {
+            playerStarted = true;
+            this._completeStage('analyze');
+            this._initPlayer(audioBlob, enrichedSegments, file.name);
+            if (this.player) {
+              this.player.setStreaming(true);
+              this.player.play();
+            }
+            this._showToast(`⚡ 邊算邊播已啟動！首批 ${processedCount} 句已就緒，背景持續解析中...`, 'info');
+            this._updateStreamingBadge(`⚡ 背景解析中 (${processedCount}/${totalCount} 句)...`);
+          } else {
+            // 後續批次動態更新至現有播放器與 UI
+            if (this.player) {
+              this.player.updateTimeline(enrichedSegments);
+            }
+            this._updateTranscriptList(enrichedSegments);
+            this._updateStreamingBadge(`⚡ 背景解析中 (${processedCount}/${totalCount} 句)...`);
+          }
+        }
+      );
+
+      // 全部解析完畢
+      if (!playerStarted) {
+        this._completeStage('analyze');
+        this._initPlayer(audioBlob, finalSegments, file.name);
+      } else {
+        if (this.player) {
+          this.player.setStreaming(false);
+          this.player.updateTimeline(finalSegments);
+        }
+        this._updateTranscriptList(finalSegments);
+        this._updateStreamingBadge(`✓ 全集 ${finalSegments.length} 句解析完成`, true);
+        setTimeout(() => this._hideStreamingBadge(), 4000);
+      }
+
+      session.segments = finalSegments;
+      await this.storage.saveSession(session);
       
     } catch(e) {
       console.error('Pipeline error:', e);
@@ -2958,18 +3529,48 @@ class UIController {
       this._showSection('source');
     }
   }
+
+  _updateStreamingBadge(text, isDone = false) {
+    const badge = document.getElementById('streaming-badge');
+    if (!badge) return;
+    badge.textContent = text;
+    badge.classList.remove('hidden');
+    if (isDone) {
+      badge.classList.add('done');
+    } else {
+      badge.classList.remove('done');
+    }
+  }
+
+  _hideStreamingBadge() {
+    const badge = document.getElementById('streaming-badge');
+    if (badge) badge.classList.add('hidden');
+  }
   
   _initPlayer(audioBlob, segments, fileName) {
     if (this.player) this.player.destroy();
     
     const cefrThreshold = parseInt(localStorage.getItem('audio_tutor_cefr_threshold') || '2');
     const replayOriginal = localStorage.getItem('audio_tutor_replay_original') !== 'false';
+    const loopCurrentSentence = localStorage.getItem('audio_tutor_loop_sentence') === 'true';
+    const origRate = parseFloat(localStorage.getItem('audio_tutor_orig_rate') || '1.00');
     const ttsRate = parseFloat(localStorage.getItem('audio_tutor_tts_rate') || '1.00');
     const ttsEngine = localStorage.getItem('audio_tutor_tts_engine') || 'edge';
     const ttsVoice = localStorage.getItem('audio_tutor_tts_voice') || (ttsEngine === 'edge' ? 'zh-TW-HsiaoChenNeural' : (ttsEngine === 'openai' ? 'nova' : ''));
     
+    const quickSpeedBtn = document.getElementById('btn-quick-speed');
+    if (quickSpeedBtn) quickSpeedBtn.textContent = `${origRate.toFixed(1)}x`;
+
+    const btnToggleLoop = document.getElementById('btn-toggle-loop');
+    if (btnToggleLoop) {
+      btnToggleLoop.classList.toggle('active', loopCurrentSentence);
+      btnToggleLoop.setAttribute('title', loopCurrentSentence ? '🔂 單句循環中 (點擊切換為整篇循序播放)' : '🔁 開啟單句無限循環跟讀 (快捷鍵 L)');
+    }
+
     this.player = new AudioTutorPlayer(audioBlob, segments, this.ttsService, {
       replayOriginal,
+      loopCurrentSentence,
+      origRate,
       ttsEngine,
       ttsRate,
       ttsVoice,
@@ -2987,6 +3588,7 @@ class UIController {
     if (progressEl) progressEl.textContent = `第 1 / ${segments.length} 句`;
     
     this._showSection('player');
+    this._renderTranscriptList(segments);
     this._loadHistory();
     
     // 顯示第一句
@@ -2995,6 +3597,99 @@ class UIController {
     }
   }
   
+  _renderTranscriptList(segments) {
+    const listEl = document.getElementById('transcript-list');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    if (!segments || segments.length === 0) return;
+
+    segments.forEach((seg, idx) => {
+      const row = document.createElement('div');
+      row.className = `transcript-row ${idx === (this.player?.currentIndex || 0) ? 'active' : ''}`;
+      row.id = `transcript-row-${idx}`;
+      row.setAttribute('data-index', idx);
+
+      const cefr = seg.cefr || 'B1';
+      const padIdx = String(idx + 1).padStart(2, '0');
+
+      row.innerHTML = `
+        <div class="transcript-row-top">
+          <span class="transcript-idx">#${padIdx}</span>
+          <span class="cefr-badge cefr-${cefr.toLowerCase()}">${cefr}</span>
+        </div>
+        <p class="transcript-orig" title="雙擊單字可直接查詢劍橋字典">${this._escapeHtml(seg.text)}</p>
+        ${seg.explanation ? `<p class="transcript-expl">💡 ${this._escapeHtml(seg.explanation)}</p>` : `<p class="transcript-expl text-muted" style="font-size:0.78rem; opacity:0.6;">⏳ 語意解析中...</p>`}
+      `;
+
+      // 點擊行跳轉 (若使用者正在反白選字，不誤觸跳轉)
+      row.addEventListener('click', () => {
+        const sel = window.getSelection()?.toString().trim();
+        if (sel && sel.length > 0) return;
+        if (this.player) {
+          this.player.jumpToIndex(idx);
+        }
+      });
+
+      // 雙擊單字開啟應用內字典 (不跳出 PWA 全螢幕)
+      const origTextEl = row.querySelector('.transcript-orig');
+      if (origTextEl) {
+        origTextEl.addEventListener('dblclick', (e) => {
+          e.stopPropagation();
+          const sel = window.getSelection()?.toString().trim();
+          const cleanWord = (sel || '').replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '');
+          if (cleanWord) {
+            this._lookupWord(cleanWord);
+          }
+        });
+      }
+
+      listEl.appendChild(row);
+    });
+  }
+
+  _updateTranscriptList(segments) {
+    const listEl = document.getElementById('transcript-list');
+    if (!listEl) return;
+
+    const currentRows = listEl.querySelectorAll('.transcript-row');
+    if (currentRows.length !== segments.length) {
+      this._renderTranscriptList(segments);
+      this._highlightActiveTranscript(this.player?.currentIndex || 0);
+      return;
+    }
+
+    segments.forEach((seg, idx) => {
+      const row = document.getElementById(`transcript-row-${idx}`);
+      if (row) {
+        const cefr = seg.cefr || 'B1';
+        const badge = row.querySelector('.cefr-badge');
+        if (badge) {
+          badge.textContent = cefr;
+          badge.className = `cefr-badge cefr-${cefr.toLowerCase()}`;
+        }
+        const expl = row.querySelector('.transcript-expl');
+        if (expl && seg.explanation) {
+          expl.textContent = `💡 ${seg.explanation}`;
+          expl.classList.remove('text-muted');
+          expl.style.opacity = '1';
+          expl.style.fontSize = '';
+        }
+      }
+    });
+  }
+
+  _highlightActiveTranscript(idx) {
+    const rows = document.querySelectorAll('.transcript-row');
+    rows.forEach((row, i) => {
+      const isActive = (i === idx);
+      row.classList.toggle('active', isActive);
+      if (isActive) {
+        // 改為 center，讓正在聽的句子永遠保持在視覺焦點中心
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    });
+  }
+
   _onPlayerStateChange(state, idx) {
     const stateEl = document.getElementById('play-state');
     const btnPlayPause = document.getElementById('btn-play-pause');
@@ -3040,6 +3735,9 @@ class UIController {
     // Seek bar
     const seekFill = document.querySelector('#seek-bar .seek-fill');
     if (seekFill) seekFill.style.width = `${((idx + 1) / this.player.timeline.length) * 100}%`;
+
+    // 同步高亮與滾動逐字稿
+    this._highlightActiveTranscript(idx);
   }
   
   _updateProgress(stage, pct, msg) {
@@ -3252,6 +3950,120 @@ class UIController {
       console.warn('SpeechSynthesis error:', e);
       onFinish();
     };
+    window.speechSynthesis.speak(utter);
+  }
+
+  /**
+   * 應用內查字典 (In-App Dictionary Modal / Bottom Sheet)
+   * 保持 PWA 沉浸式全螢幕，不跳出外部瀏覽器
+   */
+  _closeDictModal() {
+    const modal = document.getElementById('dict-modal');
+    if (modal) modal.classList.add('hidden');
+  }
+
+  async _lookupWord(word) {
+    if (!word || !word.trim()) return;
+    const cleanWord = word.trim().replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '');
+    if (!cleanWord) return;
+
+    const modal = document.getElementById('dict-modal');
+    const wordEl = document.getElementById('dict-word');
+    const phoneticEl = document.getElementById('dict-phonetic');
+    const loadingEl = document.getElementById('dict-loading');
+    const contentEl = document.getElementById('dict-content');
+    const extLink = document.getElementById('dict-external-link');
+    const btnSpeak = document.getElementById('btn-dict-speak');
+
+    if (wordEl) wordEl.textContent = cleanWord;
+    if (phoneticEl) phoneticEl.textContent = '...';
+    if (loadingEl) loadingEl.classList.remove('hidden');
+    if (contentEl) {
+      contentEl.innerHTML = '';
+      contentEl.classList.add('hidden');
+    }
+    if (extLink) {
+      extLink.href = `https://dictionary.cambridge.org/zht/dictionary/english-chinese-traditional/${encodeURIComponent(cleanWord)}`;
+    }
+    if (modal) modal.classList.remove('hidden');
+
+    let audioUrl = null;
+    if (btnSpeak) {
+      btnSpeak.onclick = () => {
+        if (audioUrl) {
+          const a = new Audio(audioUrl);
+          a.play().catch(() => this._speakEn(cleanWord));
+        } else {
+          this._speakEn(cleanWord);
+        }
+      };
+    }
+
+    try {
+      // 1. 查詢 Free Dictionary API (0 CORS, instant JSON)
+      const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(cleanWord)}`);
+      if (res.ok) {
+        const data = await res.json();
+        const entry = data[0];
+        if (entry) {
+          const phonetic = entry.phonetic || entry.phonetics?.find(p => p.text)?.text || '';
+          if (phoneticEl) phoneticEl.textContent = phonetic || '';
+          
+          audioUrl = entry.phonetics?.find(p => p.audio && p.audio.length > 0)?.audio || null;
+
+          if (contentEl && entry.meanings && entry.meanings.length > 0) {
+            contentEl.innerHTML = '';
+            entry.meanings.slice(0, 3).forEach(m => {
+              const block = document.createElement('div');
+              block.className = 'dict-meaning-block';
+              
+              const defsHtml = (m.definitions || []).slice(0, 2).map((d, i) => `
+                <div style="margin-bottom: ${i > 0 ? '0.4rem' : '0'};">
+                  <div class="dict-def">${i + 1}. ${this._escapeHtml(d.definition)}</div>
+                  ${d.example ? `<div class="dict-example">"${this._escapeHtml(d.example)}"</div>` : ''}
+                </div>
+              `).join('');
+
+              block.innerHTML = `
+                <span class="dict-pos">${this._escapeHtml(m.partOfSpeech)}</span>
+                ${defsHtml}
+              `;
+              contentEl.appendChild(block);
+            });
+            contentEl.classList.remove('hidden');
+          }
+        }
+      } else {
+        if (contentEl) {
+          contentEl.innerHTML = `
+            <div class="dict-meaning-block" style="text-align:center; padding: 1.25rem 1rem;">
+              <p style="color: var(--text-secondary); margin-bottom: 0.75rem;">已為您準備好劍橋字典線上頁面：</p>
+              <a href="https://dictionary.cambridge.org/zht/dictionary/english-chinese-traditional/${encodeURIComponent(cleanWord)}" target="_blank" class="btn-primary" style="display:inline-block; padding: 0.5rem 1rem; text-decoration:none;">在劍橋字典中查看「${this._escapeHtml(cleanWord)}」</a>
+            </div>
+          `;
+          contentEl.classList.remove('hidden');
+        }
+      }
+    } catch (e) {
+      if (contentEl) {
+        contentEl.innerHTML = `
+          <div class="dict-meaning-block" style="text-align:center; padding: 1.25rem 1rem;">
+            <a href="https://dictionary.cambridge.org/zht/dictionary/english-chinese-traditional/${encodeURIComponent(cleanWord)}" target="_blank" class="btn-primary" style="display:inline-block; padding: 0.5rem 1rem; text-decoration:none;">在劍橋字典中查看「${this._escapeHtml(cleanWord)}」</a>
+          </div>
+        `;
+        contentEl.classList.remove('hidden');
+      }
+    } finally {
+      if (loadingEl) loadingEl.classList.add('hidden');
+    }
+  }
+
+  _speakEn(text) {
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'en-US';
+    utter.rate = 0.95;
     window.speechSynthesis.speak(utter);
   }
 }

@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Audio Tutor — 聽覺沉浸式學習</title>
-  <link rel="stylesheet" href="style.css?v=4.8">
-  <link rel="manifest" href="manifest.json?v=4.8">
+  <link rel="stylesheet" href="style.css?v=6.2">
+  <link rel="manifest" href="manifest.json?v=6.2">
   <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -20,8 +20,22 @@
           <h1 class="logo">🎧 Audio Tutor</h1>
           <span class="brand-badge">聽覺沉浸式學習</span>
         </div>
+        <button id="btn-header-install" class="btn-header-install hidden" title="安裝 App 至手機或電腦桌面">📲 安裝 App</button>
       </div>
     </header>
+
+    <!-- PWA A2HS Install Banner -->
+    <div id="pwa-install-banner" class="pwa-install-banner hidden">
+      <div class="install-banner-icon">📲</div>
+      <div class="install-banner-text">
+        <strong>安裝 Audio Tutor 到桌面</strong>
+        <p>一鍵移除網址列，享受如同原生 App 的全螢幕沈浸精聽體驗！</p>
+      </div>
+      <div class="install-banner-actions">
+        <button id="btn-banner-install" class="btn-banner-install">立即安裝</button>
+        <button id="btn-banner-dismiss" class="btn-banner-dismiss" aria-label="關閉" title="稍後再說">✕</button>
+      </div>
+    </div>
 
     <main id="app-main">
       <!-- 1. Curated Podcast Section (精選) -->
@@ -195,7 +209,19 @@
             </div>
 
             <div class="input-group">
-              <label for="tts-rate">TTS 語音講解朗讀語速: <strong id="tts-rate-label" class="highlight-text">1.10</strong>x</label>
+              <label for="orig-rate">🎵 英文原音播放語速 (Original Speed): <strong id="orig-rate-label" class="highlight-text">1.00</strong>x</label>
+              <input type="range" id="orig-rate" min="0.60" max="1.40" step="0.05" value="1.00" class="range-slider">
+              <div class="range-labels">
+                <span>0.60x (慢速)</span>
+                <span>0.80x (精聽)</span>
+                <span>1.00x (原速)</span>
+                <span>1.20x (微快)</span>
+                <span>1.40x (挑戰)</span>
+              </div>
+            </div>
+
+            <div class="input-group">
+              <label for="tts-rate">🗣️ TTS 語音講解朗讀語速: <strong id="tts-rate-label" class="highlight-text">1.10</strong>x</label>
               <input type="range" id="tts-rate" min="0.80" max="1.60" step="0.05" value="1.10" class="range-slider">
             </div>
 
@@ -223,6 +249,13 @@
               <label for="toggle-replay" class="checkbox-label">
                 <input type="checkbox" id="toggle-replay" checked>
                 <span class="checkbox-text">聽完繁中解析後，自動重播原句一次</span>
+              </label>
+            </div>
+
+            <div class="input-group checkbox-group">
+              <label for="toggle-loop-sentence" class="checkbox-label">
+                <input type="checkbox" id="toggle-loop-sentence">
+                <span class="checkbox-text">🔂 單句無限循環跟讀模式 (Shadowing 口說跟讀)</span>
               </label>
             </div>
 
@@ -303,7 +336,10 @@
           <div class="player-header">
             <div class="player-title-wrap">
               <h3 id="file-name" class="player-file-name truncate">未知檔案</h3>
-              <span id="sentence-progress" class="progress-text">第 0 / 0 句</span>
+              <div class="progress-meta-row">
+                <span id="sentence-progress" class="progress-text">第 0 / 0 句</span>
+                <span id="streaming-badge" class="streaming-badge hidden">⚡ 背景解析中...</span>
+              </div>
             </div>
             <div class="player-header-actions">
               <button id="btn-player-download" class="btn-player-action" title="下載當前 MP3 音訊檔">📥 下載 MP3</button>
@@ -323,10 +359,24 @@
           </div>
 
           <div id="playback-controls" class="playback-controls">
-            <button id="btn-prev" class="control-btn" aria-label="Previous" title="上一句">⏮</button>
-            <button id="btn-replay" class="control-btn" aria-label="Replay" title="重播本句">🔄</button>
-            <button id="btn-play-pause" class="play-btn" aria-label="Play/Pause" title="播放 / 暫停">▶️</button>
-            <button id="btn-next" class="control-btn" aria-label="Next" title="下一句">⏭</button>
+            <button id="btn-prev" class="control-btn" aria-label="Previous" title="上一句 (快捷鍵 ← 或 K)">⏮</button>
+            <button id="btn-replay" class="control-btn" aria-label="Replay" title="重播本句 (快捷鍵 R)">🔄</button>
+            <button id="btn-play-pause" class="play-btn" aria-label="Play/Pause" title="播放 / 暫停 (快捷鍵 Space)">▶️</button>
+            <button id="btn-toggle-loop" class="control-btn toggle-btn" aria-label="Loop Sentence" title="單句無限循環跟讀 (快捷鍵 L)">🔂</button>
+            <button id="btn-next" class="control-btn" aria-label="Next" title="下一句 (快捷鍵 → 或 J)">⏭</button>
+            <button id="btn-quick-speed" class="speed-pill-btn" title="切換原音語速 (點擊切換 0.8x 慢速精聽 / 1.0x / 1.2x)">1.0x</button>
+          </div>
+
+          <!-- 互動式同步逐字稿面板 (Interactive Karaoke Transcript) -->
+          <div class="transcript-header-row">
+            <h4 class="transcript-heading">📝 沉浸式同步逐字稿</h4>
+            <span class="transcript-tip">💡 點擊跳轉 · 雙擊單字查字典 📖</span>
+          </div>
+
+          <div id="transcript-scroll-area" class="transcript-scroll-area">
+            <div id="transcript-list" class="transcript-list">
+              <!-- 動態渲染完整逐字稿列表 -->
+            </div>
           </div>
         </div>
       </section>
@@ -385,7 +435,72 @@
         </div>
       </div>
     </div>
+
+    <!-- In-App Dictionary Bottom Sheet / Modal (應用內查字典) -->
+    <div id="dict-modal" class="modal-overlay hidden">
+      <div class="modal-content dict-modal-content">
+        <div class="dict-handle-bar"></div>
+        <div class="modal-header dict-modal-header">
+          <div class="dict-title-group">
+            <h3 id="dict-word" class="dict-word">Word</h3>
+            <span id="dict-phonetic" class="dict-phonetic">/ ... /</span>
+            <button id="btn-dict-speak" class="btn-dict-speak" title="朗讀發音">🔊</button>
+          </div>
+          <button id="btn-close-dict" class="btn-close-modal">✕</button>
+        </div>
+
+        <div id="dict-body" class="dict-body">
+          <div id="dict-loading" class="dict-loading">
+            <div class="spinner"></div>
+            <p>正在查詢單字釋義...</p>
+          </div>
+          <div id="dict-content" class="dict-content hidden">
+            <!-- 動態填充單字詞性、釋義與例句 -->
+          </div>
+        </div>
+
+        <div class="dict-modal-footer">
+          <a id="dict-external-link" href="#" target="_blank" class="dict-ext-link">前往劍橋字典完整頁面 ↗</a>
+          <button id="btn-done-dict" class="btn-primary" style="padding: 0.4rem 1rem;">關閉</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- iOS A2HS Guide Modal -->
+    <div id="ios-install-modal" class="modal-overlay hidden">
+      <div class="modal-content ios-install-modal-content">
+        <div class="modal-header">
+          <h3>📲 將 Audio Tutor 加入 iPhone 主畫面</h3>
+          <button id="btn-close-ios-install" class="btn-close-modal">✕</button>
+        </div>
+        <div class="ios-install-body">
+          <div class="ios-step-item">
+            <div class="step-num">1</div>
+            <div class="step-desc">
+              點擊 Safari 或 Chrome 底部或頂部的<strong>「分享」按鈕</strong>
+              <span class="ios-icon-badge">📤</span>
+            </div>
+          </div>
+          <div class="ios-step-item">
+            <div class="step-num">2</div>
+            <div class="step-desc">
+              在選單中向下滑動，找到並點擊<strong>「加入主畫面」</strong>
+              <span class="ios-icon-badge">➕</span>
+            </div>
+          </div>
+          <div class="ios-step-item">
+            <div class="step-num">3</div>
+            <div class="step-desc">
+              點擊右上角的<strong>「新增」</strong>，即可享受無網址列干擾的原生全螢幕 App 體驗！
+            </div>
+          </div>
+        </div>
+        <div class="modal-actions" style="margin-top: 1.25rem;">
+          <button id="btn-confirm-ios-install" class="btn-primary" style="width: 100%;">我知道了</button>
+        </div>
+      </div>
+    </div>
   </div>
-  <script src="app.js?v=4.8"></script>
+  <script src="app.js?v=6.2"></script>
 </body>
 </html>
