@@ -203,6 +203,11 @@ class NeuralTtsService {
       audioBlob = await this._synthesizeEdge(cleanText, voice, rate);
     }
 
+    // 備援與離線匯出支援：若為系統語音或未指定線上引擎，調用 Google 雲端語音生成音訊檔
+    if (!audioBlob) {
+      audioBlob = await this._synthesizeGoogle(cleanText, 'zh-TW');
+    }
+
     if (audioBlob) {
       this.memCache.set(cacheKey, audioBlob);
       if (this.storage) {
@@ -211,6 +216,20 @@ class NeuralTtsService {
     }
 
     return audioBlob;
+  }
+
+  async _synthesizeGoogle(text, lang = 'zh-TW') {
+    try {
+      const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${lang}&client=tw-ob&q=${encodeURIComponent(text)}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob && blob.size > 100) return blob;
+      }
+    } catch (e) {
+      console.warn('[NeuralTtsService] Google TTS 合成失敗:', e);
+    }
+    return null;
   }
 
   async _synthesizeEdge(text, voice = 'zh-TW-HsiaoChenNeural', rate = 1.1) {
@@ -2703,36 +2722,34 @@ class UIController {
       return idx >= cefrThreshold;
     };
 
-    // Step 1: 預先批次合成所有 TTS 語音
+    // Step 1: 預先批次合成所有 TTS 中文語音 (支援 OpenAI、Edge 與 Google 雲端)
     const explainList = segments.filter(seg => shouldExplain(seg) && seg.explanation);
     const ttsBuffers = new Map(); // seg -> AudioBuffer
 
-    if (ttsEngine !== 'system') {
-      const BATCH_SIZE = 4;
-      for (let i = 0; i < explainList.length; i += BATCH_SIZE) {
-        const batch = explainList.slice(i, i + BATCH_SIZE);
-        const pct = 5 + Math.round((i / explainList.length) * 60);
-        if (onProgress) onProgress(`正在合成 AI 導覽語音 (${i + 1}/${explainList.length} 句)...`, pct);
+    const BATCH_SIZE = 4;
+    for (let i = 0; i < explainList.length; i += BATCH_SIZE) {
+      const batch = explainList.slice(i, i + BATCH_SIZE);
+      const pct = 5 + Math.round((i / explainList.length) * 60);
+      if (onProgress) onProgress(`正在合成 AI 中文導覽語音 (${i + 1}/${explainList.length} 句)...`, pct);
 
-        await Promise.all(batch.map(async (seg) => {
-          try {
-            const blob = await this.ttsService.synthesize(seg.explanation, {
-              engine: ttsEngine,
-              voice: ttsVoice,
-              rate: ttsRate
-            });
-            if (blob) {
-              const ab = await blob.arrayBuffer();
-              const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
-              const buf = await decodeCtx.decodeAudioData(ab);
-              decodeCtx.close();
-              ttsBuffers.set(seg, buf);
-            }
-          } catch (e) {
-            console.warn('TTS synthesis failed during export for sentence:', seg.text, e);
+      await Promise.all(batch.map(async (seg) => {
+        try {
+          const blob = await this.ttsService.synthesize(seg.explanation, {
+            engine: ttsEngine,
+            voice: ttsVoice,
+            rate: ttsRate
+          });
+          if (blob) {
+            const ab = await blob.arrayBuffer();
+            const decodeCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+            const buf = await decodeCtx.decodeAudioData(ab);
+            decodeCtx.close();
+            ttsBuffers.set(seg, buf);
           }
-        }));
-      }
+        } catch (e) {
+          console.warn('TTS synthesis failed during export for sentence:', seg.text, e);
+        }
+      }));
     }
 
     if (onProgress) onProgress('正在組裝無縫精聽混音軌道...', 70);
@@ -2782,11 +2799,13 @@ class UIController {
 
     currentTime += 0.5; // 結尾留白
 
-    // Step 3: OfflineAudioContext 高速混音渲染
+    // Step 3: OfflineAudioContext 高速混音渲染 (使用標準 24,000Hz 單聲道，節省 75% 檔案容量並保持清晰音質)
     if (onProgress) onProgress('正在進行高音質無縫渲染...', 85);
 
-    const totalFrames = Math.ceil(currentTime * sampleRate);
-    const offlineCtx = new OfflineAudioContext(numChannels, totalFrames, sampleRate);
+    const exportSampleRate = 24000;
+    const numChannels = 1; // 單聲道大幅壓縮容量
+    const totalFrames = Math.ceil(currentTime * exportSampleRate);
+    const offlineCtx = new OfflineAudioContext(numChannels, totalFrames, exportSampleRate);
 
     for (const ev of events) {
       if (ev.type === 'orig') {
