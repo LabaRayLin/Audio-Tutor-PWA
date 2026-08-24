@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Audio Tutor — 聽覺沉浸式學習</title>
-  <link rel="stylesheet" href="style.css?v=3.2">
+  <link rel="stylesheet" href="style.css?v=3.5">
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -180,9 +180,10 @@
             <div class="input-group">
               <label for="tts-engine">語音合成引擎 (TTS Engine)</label>
               <select id="tts-engine" class="select-input">
-                <option value="edge" selected>✨ Microsoft Edge-TTS (雲端高擬真神經音 · 零設定免金鑰)</option>
-                <option value="openai">🤖 OpenAI TTS-1 (頂級神經音質 · 需填 OpenAI Key)</option>
-                <option value="system">💻 裝置內建語音 (離線 Web Speech API)</option>
+                <option value="google" selected>⚡ Google 雲端自然語音 (流暢繁中 · 零設定免金鑰 · 推薦)</option>
+                <option value="openai">🤖 OpenAI TTS-1 (頂級擬真人聲 · 需填 OpenAI Key)</option>
+                <option value="edge">✨ Microsoft Edge-TTS (本機伺服器代理)</option>
+                <option value="system">💻 裝置系統語音 (離線 Web Speech API)</option>
               </select>
             </div>
 
@@ -190,17 +191,13 @@
               <label for="tts-voice">導覽語音角色 (Voice Character)</label>
               <select id="tts-voice" class="select-input">
                 <!-- Dynamically populated from JS based on chosen engine -->
-                <option value="zh-TW-HsiaoChenNeural" selected>🇹🇼 臺灣曉臻 (溫暖自然 · 精聽推薦)</option>
-                <option value="zh-TW-YunJheNeural">🇹🇼 臺灣雲哲 (清晰穩重男聲)</option>
-                <option value="zh-TW-HsiaoYuNeural">🇹🇼 臺灣曉雨 (清新活潑女聲)</option>
-                <option value="zh-CN-XiaoxiaoNeural">🇨🇳 曉曉 (自然導覽女聲)</option>
-                <option value="zh-CN-YunxiNeural">🇨🇳 雲希 (生動流暢男聲)</option>
+                <option value="zh-TW" selected>🇹🇼 臺灣繁中自然女聲 (清晰流暢 · 推薦)</option>
               </select>
             </div>
 
             <div class="input-group">
-              <label for="tts-rate">TTS 語音講解朗讀語速: <strong id="tts-rate-label" class="highlight-text">1.00</strong>x</label>
-              <input type="range" id="tts-rate" min="0.75" max="1.50" step="0.05" value="1.00" class="range-slider">
+              <label for="tts-rate">TTS 語音講解朗讀語速: <strong id="tts-rate-label" class="highlight-text">1.10</strong>x</label>
+              <input type="range" id="tts-rate" min="0.80" max="1.60" step="0.05" value="1.10" class="range-slider">
             </div>
 
             <div class="input-group">
@@ -383,6 +380,6 @@
       </div>
     </div>
   </div>
-  <script src="app.js?v=3.2"></script>
+  <script src="app.js?v=3.5"></script>
 </body>
 </html>
