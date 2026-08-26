@@ -242,7 +242,9 @@ class StorageManager {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 雲端高擬真神經網路語音合成服務 (Edge-TTS / OpenAI / Web Speech)
+// ─────────────────────────────────────────────────────────────
+// 雲端高擬真神經網路語音合成服務 (Cloud Google/Baidu / Edge-TTS / OpenAI / Web Speech)
+// 支援 iPhone/iOS、Android 與電腦全平台
 // ─────────────────────────────────────────────────────────────
 class NeuralTtsService {
   constructor(apiKeys, storage) {
@@ -251,15 +253,26 @@ class NeuralTtsService {
     this.memCache = new Map();
   }
 
+  _cleanTextForSpeech(text) {
+    return (text || '')
+      .replace(/^(n|v|adj|adv|prep|conj|pron|art|num|int|phrase)\.\s*/gi, '')
+      .replace(/\b(n|v|adj|adv|prep|conj|pron|art|num|int|phrase)\.\s*/gi, '')
+      .replace(/["'“”]/g, '')
+      .replace(/[；;]/g, '，')
+      .replace(/[（(].*?[）)]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   _getCacheKey(text, engine, voice, rate) {
     return `${engine}_${voice}_${rate}_${text}`;
   }
 
   async synthesize(text, options = {}) {
     if (!text || !text.trim()) return null;
-    const cleanText = text.trim();
-    const engine = options.engine || 'system';
-    const voice = options.voice || (engine === 'openai' ? 'nova' : 'zh-TW-HsiaoChenNeural');
+    const cleanText = this._cleanTextForSpeech(text);
+    const engine = options.engine || safeStorage.getItem('audio_tutor_tts_engine', 'cloud');
+    const voice = options.voice || (engine === 'openai' ? 'nova' : (engine === 'cloud' ? 'cloud-google' : 'zh-TW-HsiaoChenNeural'));
     const rate = options.rate || 1.10;
 
     const cacheKey = this._getCacheKey(cleanText, engine, voice, rate);
@@ -280,15 +293,17 @@ class NeuralTtsService {
 
     let audioBlob = null;
 
-    if (engine === 'openai') {
+    if (engine === 'cloud') {
+      audioBlob = await this._synthesizeCloud(cleanText, voice, rate);
+    } else if (engine === 'openai') {
       audioBlob = await this._synthesizeOpenAI(cleanText, voice, rate);
     } else if (engine === 'edge') {
       audioBlob = await this._synthesizeEdge(cleanText, voice, rate);
     }
 
-    // 備援與離線匯出支援：若為系統語音或未指定線上引擎，調用 Google 雲端語音生成音訊檔
+    // 備援：若選定引擎失敗或為 system 引擎匯出時，調用 Cloud 雲端語音生成音訊檔
     if (!audioBlob) {
-      audioBlob = await this._synthesizeGoogle(cleanText, 'zh-TW');
+      audioBlob = await this._synthesizeCloud(cleanText, 'cloud-google', rate);
     }
 
     if (audioBlob) {
@@ -301,9 +316,32 @@ class NeuralTtsService {
     return audioBlob;
   }
 
-  async _synthesizeGoogle(text, lang = 'zh-TW') {
+  /**
+   * 雲端極速語音合成 (Google Neural zh-TW & 百度 Web TTS)
+   * 零設定 · 零延遲 · 支援 iOS/iPhone Safari、Android 與桌面
+   */
+  async _synthesizeCloud(text, voice = 'cloud-google', rate = 1.1) {
+    const cleanText = this._cleanTextForSpeech(text);
+    if (!cleanText) return null;
+
+    // 1. 百度中文 (字正腔圓、速度適中)
+    if (voice && voice.includes('baidu')) {
+      try {
+        const spd = rate > 1.2 ? 5 : (rate < 0.9 ? 3 : 4);
+        const url = `https://fanyi.baidu.com/gettts?lan=zh&text=${encodeURIComponent(cleanText)}&spd=${spd}&source=web`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const blob = await res.blob();
+          if (blob && blob.size > 100) return blob;
+        }
+      } catch (e) {
+        console.warn('[NeuralTtsService] Baidu TTS 連線失敗，切換至 Google TTS 備援:', e);
+      }
+    }
+
+    // 2. Google Translate Neural zh-TW (標準繁體中文、真人語調)
     try {
-      const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${lang}&client=tw-ob&q=${encodeURIComponent(text)}`;
+      const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=zh-TW&client=tw-ob&q=${encodeURIComponent(cleanText)}`;
       const res = await fetch(url);
       if (res.ok) {
         const blob = await res.blob();
@@ -312,6 +350,17 @@ class NeuralTtsService {
     } catch (e) {
       console.warn('[NeuralTtsService] Google TTS 合成失敗:', e);
     }
+
+    // 3. 次要備援：Baidu TTS
+    try {
+      const url = `https://fanyi.baidu.com/gettts?lan=zh&text=${encodeURIComponent(cleanText)}&spd=4&source=web`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob && blob.size > 100) return blob;
+      }
+    } catch (e) {}
+
     return null;
   }
 
@@ -1556,19 +1605,19 @@ class AudioTutorPlayer {
   }
   
   /**
-   * 播放語音講解 (OpenAI / Edge-TTS 優先，本機/系統語音精確套用選定角色)
+   * 播放語音講解 (支援 Cloud 雲端 Google/百度、OpenAI、Edge-TTS 與 iOS 優化原生語音)
    */
   async _speak(text, lang = 'zh-TW') {
     if (!text || !text.trim()) return;
     const rate = this.options.ttsRate || 1.10;
-    const engine = this.options.ttsEngine || 'system';
+    const engine = this.options.ttsEngine || 'cloud';
 
-    // 1. 嘗試 OpenAI TTS (如果選用且有填 Key)
-    if (engine === 'openai' && this.ttsService) {
+    // 1. 雲端極速語音 (Lumi-AI / Google & 百度 · iPhone 完美相容 · 免 Key 零延遲)
+    if ((engine === 'cloud' || engine === 'openai' || engine === 'edge') && this.ttsService) {
       try {
         const audioBlob = await this.ttsService.synthesize(text, {
-          engine: 'openai',
-          voice: this.options.ttsVoice || 'nova',
+          engine: engine,
+          voice: this.options.ttsVoice,
           rate: rate
         });
         if (audioBlob) {
@@ -1577,46 +1626,66 @@ class AudioTutorPlayer {
             const AudioContextClass = window.AudioContext || window.webkitAudioContext;
             this.audioCtx = new AudioContextClass();
           }
-          const ttsBuffer = await this.audioCtx.decodeAudioData(ab);
-          await this._playBuffer(ttsBuffer);
-          return;
-        }
-      } catch (e) {
-        console.warn('[Player] OpenAI TTS 異常，降級至系統語音：', e);
-      }
-    }
-
-    // 2. 嘗試 Edge-TTS (如果選用且有本機後端或直連)
-    if (engine === 'edge' && this.ttsService) {
-      try {
-        const audioBlob = await this.ttsService.synthesize(text, {
-          engine: 'edge',
-          voice: this.options.ttsVoice || 'zh-TW-HsiaoChenNeural',
-          rate: rate
-        });
-        if (audioBlob) {
-          const ab = await audioBlob.arrayBuffer();
-          if (!this.audioCtx) {
-            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-            this.audioCtx = new AudioContextClass();
+          if (this.audioCtx.state === 'suspended') {
+            await this.audioCtx.resume();
           }
           const ttsBuffer = await this.audioCtx.decodeAudioData(ab);
           await this._playBuffer(ttsBuffer);
           return;
         }
       } catch (e) {
-        console.warn('[Player] Edge-TTS 異常，降級至系統語音：', e);
+        console.warn('[Player] 雲端/線上 TTS 異常，降級至系統語音：', e);
       }
     }
 
-    // 3. 系統語音 Web Speech API (精確套用選定角色與語速)
+    // 2. 系統原生語音 Web Speech API (包含 iPhone/iOS 專屬防卡死、長句分段與 Apple 真人音支援)
     return this._speakSpeechSynthesis(text, lang, rate);
   }
 
+  _splitTextForIOS(text) {
+    if (!text || text.length <= 70) return [text];
+    const segments = [];
+    const sentences = text.match(/[^。！？.!?]+[。！？.!?]*/g) || [text];
+    let current = '';
+    for (const s of sentences) {
+      if ((current + s).length > 65) {
+        if (current.trim()) segments.push(current.trim());
+        current = s;
+      } else {
+        current += s;
+      }
+    }
+    if (current.trim()) segments.push(current.trim());
+    return segments.length > 0 ? segments : [text];
+  }
+
   _speakSpeechSynthesis(text, lang = 'zh-TW', rate = 1.10) {
-    return new Promise((resolve) => {
-      if (!window.speechSynthesis) { resolve(); return; }
-      window.speechSynthesis.cancel();
+    return new Promise(async (resolve) => {
+      if (!window.speechSynthesis || !text) { resolve(); return; }
+
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent || '') || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent || ''));
+      this._ttsCallCount = (this._ttsCallCount || 0) + 1;
+
+      // iOS: 每 5 次主動重置語音引擎，防止 WebKit 底層累積記憶體鎖定造成卡頓
+      if (isIOS && this._ttsCallCount % 5 === 0) {
+        try { window.speechSynthesis.cancel(); } catch (e) {}
+        await new Promise(r => setTimeout(r, 60));
+      }
+
+      // iOS: 若句子過長 (> 70 字)，自動分段播放以防觸發 15 秒 WebKit 強制截斷
+      if (isIOS && text.length > 70) {
+        const segments = this._splitTextForIOS(text);
+        for (const seg of segments) {
+          if (this._isStopped || this._paused) break;
+          await this._speakSpeechSynthesis(seg, lang, rate);
+        }
+        resolve();
+        return;
+      }
+
+      try { window.speechSynthesis.cancel(); } catch (e) {}
+      try { window.speechSynthesis.resume(); } catch (e) {}
+
       const utter = new SpeechSynthesisUtterance(text);
       utter.lang = lang || 'zh-TW';
       utter.rate = Math.max(0.75, Math.min(1.75, rate));
@@ -1631,7 +1700,11 @@ class AudioTutorPlayer {
 
       if (!selectedVoice && voices.length > 0) {
         selectedVoice =
+          // iOS Apple 真人語音優先 (美佳 Mei-Jia, 婷婷 Ting-Ting, Sin-Ji, Siri)
+          voices.find(v => v.name.includes('Mei-Jia') || v.name.includes('美佳') || v.name.includes('Ting-Ting') || v.name.includes('婷婷') || v.name.includes('Sin-Ji') || v.name.includes('Siri')) ||
+          // 微軟 Natural / 臺灣曉臻
           voices.find(v => v.name.includes('Natural') || v.name.includes('Online')) ||
+          // Google 繁中
           voices.find(v => v.lang === 'zh-TW' && (v.name.includes('Google') || v.name.includes('國語') || v.name.includes('HsiaoChen') || v.name.includes('曉臻') || v.name.includes('雅婷') || v.name.includes('Hanhan'))) ||
           voices.find(v => v.lang === 'zh-TW' || v.lang === 'cmn-Hant-TW') ||
           voices.find(v => v.lang.startsWith('zh'));
@@ -1641,9 +1714,38 @@ class AudioTutorPlayer {
         utter.voice = selectedVoice;
       }
 
-      utter.onend = resolve;
-      utter.onerror = resolve;
-      window.speechSynthesis.speak(utter);
+      let hasResolved = false;
+      let watchdogTimer = null;
+
+      const done = () => {
+        if (!hasResolved) {
+          hasResolved = true;
+          if (watchdogTimer) clearTimeout(watchdogTimer);
+          resolve();
+        }
+      };
+
+      utter.onend = done;
+      utter.onerror = (e) => {
+        console.warn('[Player] 系統語音回報注意:', e?.error || e);
+        done();
+      };
+
+      // 🛡️ 看門狗定時器 (Watchdog)：若 iOS/WebKit 遺失 onend 事件，絕不卡死播放迴圈
+      const maxWait = Math.max(2500, text.length * 350);
+      watchdogTimer = setTimeout(() => {
+        if (!hasResolved) {
+          console.warn('[Player] 語音朗讀超時防護觸發，自動推進下一句');
+          try { window.speechSynthesis.cancel(); } catch (e) {}
+          done();
+        }
+      }, maxWait);
+
+      try {
+        window.speechSynthesis.speak(utter);
+      } catch (err) {
+        done();
+      }
     });
   }
 
@@ -2984,7 +3086,7 @@ class UIController {
     const openaiKey = this.apiKeys.getOpenAIKey();
     const lang = safeStorage.getItem('audio_tutor_source_lang', 'en');
     const rate = safeStorage.getItem('audio_tutor_tts_rate', '1.10');
-    const engine = safeStorage.getItem('audio_tutor_tts_engine', 'system');
+    const engine = safeStorage.getItem('audio_tutor_tts_engine', 'cloud');
     const cefr = safeStorage.getItem('audio_tutor_cefr_threshold', '2');  // 預設 B1 (index 2)
     const replay = safeStorage.getItem('audio_tutor_replay_original') !== 'false';
     
@@ -3032,13 +3134,25 @@ class UIController {
   
   _populateVoices() {
     const select = document.getElementById('tts-voice');
-    const engine = document.getElementById('tts-engine')?.value || safeStorage.getItem('audio_tutor_tts_engine', 'system');
+    const engine = document.getElementById('tts-engine')?.value || safeStorage.getItem('audio_tutor_tts_engine', 'cloud');
     if (!select) return;
     
     const savedVoice = safeStorage.getItem('audio_tutor_tts_voice');
     select.innerHTML = '';
     
-    if (engine === 'openai') {
+    if (engine === 'cloud') {
+      const cloudVoices = [
+        { id: 'cloud-google', name: '🌐 Google 繁中真人自然音 (流暢生動 · iPhone/Android/電腦推薦 · 零設定)' },
+        { id: 'cloud-baidu', name: '🐼 百度中文標準發音 (字正腔圓 · 零延遲)' }
+      ];
+      cloudVoices.forEach(v => {
+        const option = document.createElement('option');
+        option.value = v.id;
+        option.textContent = v.name;
+        if (savedVoice === v.id || (!savedVoice && v.id === 'cloud-google')) option.selected = true;
+        select.appendChild(option);
+      });
+    } else if (engine === 'openai') {
       const openAiVoices = [
         { id: 'nova', name: '✨ Nova (自然親切女聲 · 推薦)' },
         { id: 'alloy', name: '🎙️ Alloy (通用平衡音)' },
@@ -3089,15 +3203,15 @@ class UIController {
       );
       const list = zhVoices.length > 0 ? zhVoices : voices;
 
-      // 智慧排序：高擬真神經音 (Natural / Google / Apple) 排在最前
+      // 智慧排序：高擬真神經音 (Apple / Natural / Google) 排在最前
       list.sort((a, b) => {
         const score = (v) => {
           let s = 0;
           const n = v.name.toLowerCase();
           const l = v.lang.toLowerCase();
+          if (n.includes('mei-jia') || n.includes('美佳') || n.includes('ting-ting') || n.includes('婷婷') || n.includes('sin-ji') || n.includes('siri')) s += 120;
           if (n.includes('natural') || n.includes('online')) s += 100;
           if (n.includes('google')) s += 80;
-          if (n.includes('mei-jia') || n.includes('sin-ji') || n.includes('siri')) s += 70;
           if (l.includes('tw') || l.includes('hant')) s += 50;
           return s;
         };
@@ -3109,9 +3223,9 @@ class UIController {
         option.value = v.name;
         let prefix = '🗣️ ';
         const name = v.name;
-        if (name.includes('Natural') || name.includes('Online')) prefix = '✨ [微軟 Natural] ';
+        if (name.includes('Mei-Jia') || name.includes('美佳') || name.includes('Ting-Ting') || name.includes('婷婷') || name.includes('Sin-Ji') || name.includes('Siri')) prefix = '🍎 [Apple 原生繁中] ';
+        else if (name.includes('Natural') || name.includes('Online')) prefix = '✨ [微軟 Natural] ';
         else if (name.includes('Google')) prefix = '🌟 [Google 雲端] ';
-        else if (name.includes('Mei-Jia') || name.includes('Sin-Ji') || name.includes('Siri')) prefix = '🍎 [Apple 真人] ';
         else if (v.lang.includes('TW') || name.includes('Taiwan') || name.includes('臺灣') || name.includes('台灣')) prefix = '🇹🇼 ';
         else if (v.lang.includes('HK') || name.includes('Hong Kong')) prefix = '🇭🇰 ';
 
@@ -3122,7 +3236,7 @@ class UIController {
 
       if (!select.value && select.options.length > 0) {
         select.options[0].selected = true;
-        localStorage.setItem('audio_tutor_tts_voice', select.options[0].value);
+        safeStorage.setItem('audio_tutor_tts_voice', select.options[0].value);
       }
     }
   }
@@ -3895,9 +4009,9 @@ class UIController {
       return;
     }
 
-    const engine = document.getElementById('tts-engine')?.value || localStorage.getItem('audio_tutor_tts_engine') || 'system';
-    const voice = document.getElementById('tts-voice')?.value || localStorage.getItem('audio_tutor_tts_voice') || '';
-    const rate = parseFloat(document.getElementById('tts-rate')?.value || localStorage.getItem('audio_tutor_tts_rate') || '1.10');
+    const engine = document.getElementById('tts-engine')?.value || safeStorage.getItem('audio_tutor_tts_engine', 'cloud');
+    const voice = document.getElementById('tts-voice')?.value || safeStorage.getItem('audio_tutor_tts_voice', 'cloud-google');
+    const rate = parseFloat(document.getElementById('tts-rate')?.value || safeStorage.getItem('audio_tutor_tts_rate', '1.10'));
 
     const sampleText = '歡迎使用 Audio Tutor！我會為你精闢解析英文單字與文法。';
 
@@ -3914,7 +4028,21 @@ class UIController {
     };
 
     try {
-      if (engine === 'openai') {
+      if (engine === 'cloud') {
+        this._showToast(`🌐 正在使用雲端高擬真語音試聽 [${voice || 'cloud-google'}]...`);
+        const blob = await this.ttsService.synthesize(sampleText, { engine: 'cloud', voice: voice || 'cloud-google', rate });
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          this._previewAudioObj = audio;
+          audio.onended = () => { URL.revokeObjectURL(url); onFinish(); };
+          audio.onerror = () => { URL.revokeObjectURL(url); onFinish(); };
+          await audio.play();
+          return;
+        } else {
+          throw new Error('雲端語音未返回音訊');
+        }
+      } else if (engine === 'openai') {
         const apiKey = this.apiKeys.getOpenAIKey();
         if (!apiKey) {
           this._showToast('⚠️ 試聽 OpenAI TTS 需要先在上方填入 OpenAI API Key', 'error');
@@ -3946,7 +4074,7 @@ class UIController {
           await audio.play();
           return;
         } else {
-          this._showToast('⚠️ Edge-TTS 需要啟動本機 python server.py。若在 GitHub Pages 上，請切換至「💻 瀏覽器高擬真語音」或「🤖 OpenAI TTS-1」！', 'error');
+          this._showToast('⚠️ Edge-TTS 需要啟動本機 python server.py。若在 GitHub Pages 上，請切換至「🌐 雲端極速語音」或「💻 瀏覽器原生語音」！', 'error');
           onFinish();
           return;
         }
