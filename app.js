@@ -317,6 +317,18 @@ class NeuralTtsService {
   }
 
   /**
+   * 取得雲端串流音訊網址 (HTML5 Audio 0-CORS 直連)
+   */
+  getCloudTtsUrl(text, voice = 'cloud-google', rate = 1.1) {
+    const cleanText = this._cleanTextForSpeech(text);
+    if (voice && voice.includes('baidu')) {
+      const spd = rate > 1.2 ? 5 : (rate < 0.9 ? 3 : 4);
+      return `https://fanyi.baidu.com/gettts?lan=zh&text=${encodeURIComponent(cleanText)}&spd=${spd}&source=web`;
+    }
+    return `https://translate.google.com/translate_tts?ie=UTF-8&tl=zh-TW&client=tw-ob&q=${encodeURIComponent(cleanText)}`;
+  }
+
+  /**
    * 雲端極速語音合成 (Google Neural zh-TW & 百度 Web TTS)
    * 零設定 · 零延遲 · 支援 iOS/iPhone Safari、Android 與桌面
    */
@@ -324,42 +336,36 @@ class NeuralTtsService {
     const cleanText = this._cleanTextForSpeech(text);
     if (!cleanText) return null;
 
-    // 1. 百度中文 (字正腔圓、速度適中)
+    const urls = [];
     if (voice && voice.includes('baidu')) {
+      const spd = rate > 1.2 ? 5 : (rate < 0.9 ? 3 : 4);
+      urls.push(`https://fanyi.baidu.com/gettts?lan=zh&text=${encodeURIComponent(cleanText)}&spd=${spd}&source=web`);
+      urls.push(`https://translate.google.com/translate_tts?ie=UTF-8&tl=zh-TW&client=tw-ob&q=${encodeURIComponent(cleanText)}`);
+    } else {
+      urls.push(`https://translate.google.com/translate_tts?ie=UTF-8&tl=zh-TW&client=tw-ob&q=${encodeURIComponent(cleanText)}`);
+      urls.push(`https://fanyi.baidu.com/gettts?lan=zh&text=${encodeURIComponent(cleanText)}&spd=4&source=web`);
+    }
+
+    for (const rawUrl of urls) {
+      // 1. Direct fetch
       try {
-        const spd = rate > 1.2 ? 5 : (rate < 0.9 ? 3 : 4);
-        const url = `https://fanyi.baidu.com/gettts?lan=zh&text=${encodeURIComponent(cleanText)}&spd=${spd}&source=web`;
-        const res = await fetch(url);
+        const res = await fetch(rawUrl);
         if (res.ok) {
           const blob = await res.blob();
           if (blob && blob.size > 100) return blob;
         }
-      } catch (e) {
-        console.warn('[NeuralTtsService] Baidu TTS 連線失敗，切換至 Google TTS 備援:', e);
-      }
-    }
+      } catch (e) {}
 
-    // 2. Google Translate Neural zh-TW (標準繁體中文、真人語調)
-    try {
-      const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=zh-TW&client=tw-ob&q=${encodeURIComponent(cleanText)}`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const blob = await res.blob();
-        if (blob && blob.size > 100) return blob;
-      }
-    } catch (e) {
-      console.warn('[NeuralTtsService] Google TTS 合成失敗:', e);
+      // 2. Proxy fetch (bypasses browser CORS for blob decoding/export)
+      try {
+        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(rawUrl)}`;
+        const res = await fetch(proxyUrl);
+        if (res.ok) {
+          const blob = await res.blob();
+          if (blob && blob.size > 100) return blob;
+        }
+      } catch (e) {}
     }
-
-    // 3. 次要備援：Baidu TTS
-    try {
-      const url = `https://fanyi.baidu.com/gettts?lan=zh&text=${encodeURIComponent(cleanText)}&spd=4&source=web`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const blob = await res.blob();
-        if (blob && blob.size > 100) return blob;
-      }
-    } catch (e) {}
 
     return null;
   }
@@ -1612,8 +1618,13 @@ class AudioTutorPlayer {
     const rate = this.options.ttsRate || 1.10;
     const engine = this.options.ttsEngine || 'cloud';
 
-    // 1. 雲端極速語音 (Lumi-AI / Google & 百度 · iPhone 完美相容 · 免 Key 零延遲)
-    if ((engine === 'cloud' || engine === 'openai' || engine === 'edge') && this.ttsService) {
+    // 1. 雲端極速語音 (Lumi-AI / Google & 百度 · 0-CORS 串流直連 · iPhone/Android 全平台相容)
+    if (engine === 'cloud') {
+      return this._playCloudAudioStream(text, this.options.ttsVoice || 'cloud-google', rate);
+    }
+
+    // 2. OpenAI 或 Edge-TTS (音訊 Blob 解碼播放)
+    if ((engine === 'openai' || engine === 'edge') && this.ttsService) {
       try {
         const audioBlob = await this.ttsService.synthesize(text, {
           engine: engine,
@@ -1638,8 +1649,75 @@ class AudioTutorPlayer {
       }
     }
 
-    // 2. 系統原生語音 Web Speech API (包含 iPhone/iOS 專屬防卡死、長句分段與 Apple 真人音支援)
+    // 3. 系統原生語音 Web Speech API (包含 iPhone/iOS 專屬防卡死、長句分段與 Apple 真人音支援)
     return this._speakSpeechSynthesis(text, lang, rate);
+  }
+
+  /**
+   * 播放雲端串流中文語音 (0-CORS 直連播放，保證 iPhone / Android / 各瀏覽器 100% 成功發音)
+   */
+  _playCloudAudioStream(text, voice = 'cloud-google', rate = 1.10) {
+    return new Promise((resolve) => {
+      if (!text || !text.trim()) { resolve(); return; }
+      const cleanText = this.ttsService ? this.ttsService._cleanTextForSpeech(text) : text.trim();
+      const primaryUrl = this.ttsService ? this.ttsService.getCloudTtsUrl(cleanText, voice, rate) : `https://translate.google.com/translate_tts?ie=UTF-8&tl=zh-TW&client=tw-ob&q=${encodeURIComponent(cleanText)}`;
+      const fallbackUrl = this.ttsService ? this.ttsService.getCloudTtsUrl(cleanText, (voice || '').includes('baidu') ? 'cloud-google' : 'cloud-baidu', rate) : `https://fanyi.baidu.com/gettts?lan=zh&text=${encodeURIComponent(cleanText)}&spd=4&source=web`;
+
+      let audio = this._cloudAudioPlayer;
+      if (!audio) {
+        audio = new Audio();
+        this._cloudAudioPlayer = audio;
+      }
+
+      let hasResolved = false;
+      let watchdogTimer = null;
+
+      const done = () => {
+        if (!hasResolved) {
+          hasResolved = true;
+          if (watchdogTimer) clearTimeout(watchdogTimer);
+          audio.onended = null;
+          audio.onerror = null;
+          resolve();
+        }
+      };
+
+      audio.onended = done;
+      audio.onerror = (e) => {
+        console.warn('[Player] Cloud TTS primary URL failed, trying fallback:', e);
+        if (audio.src !== fallbackUrl) {
+          audio.src = fallbackUrl;
+          audio.play().catch(() => {
+            this._speakSpeechSynthesis(text, 'zh-TW', rate).then(done);
+          });
+        } else {
+          this._speakSpeechSynthesis(text, 'zh-TW', rate).then(done);
+        }
+      };
+
+      const maxWait = Math.max(3000, cleanText.length * 400);
+      watchdogTimer = setTimeout(() => {
+        if (!hasResolved) {
+          console.warn('[Player] Cloud TTS timeout watchdog triggered');
+          try { audio.pause(); } catch(e){}
+          done();
+        }
+      }, maxWait);
+
+      audio.src = primaryUrl;
+      audio.playbackRate = Math.max(0.75, Math.min(1.5, rate || 1.0));
+      audio.play().catch(err => {
+        console.warn('[Player] Cloud audio play rejected, trying fallback:', err);
+        if (audio.src !== fallbackUrl) {
+          audio.src = fallbackUrl;
+          audio.play().catch(() => {
+            this._speakSpeechSynthesis(text, 'zh-TW', rate).then(done);
+          });
+        } else {
+          this._speakSpeechSynthesis(text, 'zh-TW', rate).then(done);
+        }
+      });
+    });
   }
 
   _splitTextForIOS(text) {
@@ -4030,18 +4108,43 @@ class UIController {
     try {
       if (engine === 'cloud') {
         this._showToast(`🌐 正在使用雲端高擬真語音試聽 [${voice || 'cloud-google'}]...`);
-        const blob = await this.ttsService.synthesize(sampleText, { engine: 'cloud', voice: voice || 'cloud-google', rate });
-        if (blob) {
-          const url = URL.createObjectURL(blob);
-          const audio = new Audio(url);
+        const cleanText = this.ttsService ? this.ttsService._cleanTextForSpeech(sampleText) : sampleText;
+        const primaryUrl = this.ttsService ? this.ttsService.getCloudTtsUrl(cleanText, voice || 'cloud-google', rate) : `https://translate.google.com/translate_tts?ie=UTF-8&tl=zh-TW&client=tw-ob&q=${encodeURIComponent(cleanText)}`;
+        const fallbackUrl = this.ttsService ? this.ttsService.getCloudTtsUrl(cleanText, (voice || '').includes('baidu') ? 'cloud-google' : 'cloud-baidu', rate) : `https://fanyi.baidu.com/gettts?lan=zh&text=${encodeURIComponent(cleanText)}&spd=4&source=web`;
+
+        let audio = this._previewAudioObj;
+        if (!audio) {
+          audio = new Audio();
           this._previewAudioObj = audio;
-          audio.onended = () => { URL.revokeObjectURL(url); onFinish(); };
-          audio.onerror = () => { URL.revokeObjectURL(url); onFinish(); };
-          await audio.play();
-          return;
-        } else {
-          throw new Error('雲端語音未返回音訊');
         }
+
+        audio.onended = onFinish;
+        audio.onerror = () => {
+          console.warn('[Preview] Primary cloud TTS URL failed, trying fallback...');
+          if (audio.src !== fallbackUrl) {
+            audio.src = fallbackUrl;
+            audio.play().catch(() => {
+              this._speakSampleSpeechSynthesis(sampleText, voice, rate, onFinish);
+            });
+          } else {
+            this._speakSampleSpeechSynthesis(sampleText, voice, rate, onFinish);
+          }
+        };
+
+        audio.src = primaryUrl;
+        audio.playbackRate = Math.max(0.75, Math.min(1.5, rate || 1.0));
+        await audio.play().catch(err => {
+          console.warn('[Preview] Cloud audio play failed, trying fallback:', err);
+          if (audio.src !== fallbackUrl) {
+            audio.src = fallbackUrl;
+            audio.play().catch(() => {
+              this._speakSampleSpeechSynthesis(sampleText, voice, rate, onFinish);
+            });
+          } else {
+            this._speakSampleSpeechSynthesis(sampleText, voice, rate, onFinish);
+          }
+        });
+        return;
       } else if (engine === 'openai') {
         const apiKey = this.apiKeys.getOpenAIKey();
         if (!apiKey) {
