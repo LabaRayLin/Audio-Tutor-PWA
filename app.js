@@ -3279,7 +3279,6 @@ class UIController {
     }
 
     const sampleRate = origBuffer.sampleRate || 24000;
-    const numChannels = Math.min(2, origBuffer.numberOfChannels || 1);
 
     const cefrThreshold = parseInt(safeStorage.getItem('audio_tutor_cefr_threshold', '2'));
     const replayOriginal = safeStorage.getItem('audio_tutor_replay_original') !== 'false';
@@ -4123,6 +4122,9 @@ function startApp() {
     console.error('Fatal initialization error:', err);
   }
 }
+
+window.startApp = startApp;
+window.UIController = UIController;
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', startApp);
