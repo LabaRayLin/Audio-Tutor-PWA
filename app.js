@@ -2416,7 +2416,9 @@ class UIController {
 
   _registerSW() {
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./sw.js').catch(e => console.warn('SW registration failed', e));
+      navigator.serviceWorker.register('./sw.js').then(reg => {
+        reg.update().catch(() => {});
+      }).catch(e => console.warn('SW registration failed', e));
     }
   }
   
