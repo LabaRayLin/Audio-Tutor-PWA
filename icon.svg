@@ -1,28 +1,70 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
-  <!-- 背景圓形 -->
-  <circle cx="256" cy="256" r="256" fill="#6366f1" />
+  <defs>
+    <!-- 滿版主背景漸層：深度藍紫至科技靛藍 -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4338ca" />
+      <stop offset="45%" stop-color="#4f46e5" />
+      <stop offset="100%" stop-color="#7c3aed" />
+    </linearGradient>
 
-  <!-- 耳機頭帶 -->
-  <path
-    d="M 146 250 C 146 160 200 125 256 125 C 312 125 366 160 366 250"
-    fill="none"
-    stroke="#ffffff"
-    stroke-width="26"
-    stroke-linecap="round"
-  />
+    <!-- 頂部環境柔光 -->
+    <radialGradient id="ambientGlow" cx="30%" cy="20%" r="65%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.25" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </radialGradient>
 
-  <!-- 左耳罩主體與緩衝墊 -->
-  <rect x="118" y="225" width="54" height="100" rx="27" fill="#ffffff" />
-  <rect x="156" y="239" width="16" height="72" rx="8" fill="#e0e7ff" />
+    <!-- 圖標微立體陰影 -->
+    <filter id="dropShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#1e1b4b" flood-opacity="0.38" />
+    </filter>
 
-  <!-- 右耳罩主體與緩衝墊 -->
-  <rect x="340" y="225" width="54" height="100" rx="27" fill="#ffffff" />
-  <rect x="340" y="239" width="16" height="72" rx="8" fill="#e0e7ff" />
+    <!-- 核心音波光澤漸層 -->
+    <linearGradient id="waveGlow" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#e0e7ff" />
+    </linearGradient>
 
-  <!-- 中央音波圖示 (象徵音訊講解與學習) -->
-  <rect x="216" y="248" width="10" height="24" rx="5" fill="#ffffff" opacity="0.95" />
-  <rect x="236" y="232" width="10" height="56" rx="5" fill="#ffffff" opacity="0.95" />
-  <rect x="256" y="216" width="10" height="88" rx="5" fill="#ffffff" opacity="0.95" />
-  <rect x="276" y="232" width="10" height="56" rx="5" fill="#ffffff" opacity="0.95" />
-  <rect x="296" y="248" width="10" height="24" rx="5" fill="#ffffff" opacity="0.95" />
+    <!-- AI 語音學習核心節點漸層 -->
+    <linearGradient id="corePulse" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#ffffff" />
+    </linearGradient>
+  </defs>
+
+  <!-- 滿版背景 (Full-Bleed Canvas) -->
+  <rect width="512" height="512" fill="url(#bgGrad)" />
+  <rect width="512" height="512" fill="url(#ambientGlow)" />
+
+  <!-- 主體圖標群組 (符合 Maskable Icon 80% 安全圈，防裁剪) -->
+  <g filter="url(#dropShadow)">
+    <!-- 簡約流暢耳機頭帶 -->
+    <path
+      d="M 152 254 C 152 162 202 126 256 126 C 310 126 360 162 360 254"
+      fill="none"
+      stroke="#ffffff"
+      stroke-width="26"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+
+    <!-- 左耳罩主體 -->
+    <rect x="126" y="222" width="46" height="92" rx="23" fill="#ffffff" />
+    <rect x="156" y="236" width="12" height="64" rx="6" fill="#c7d2fe" />
+
+    <!-- 右耳罩主體 -->
+    <rect x="340" y="222" width="46" height="92" rx="23" fill="#ffffff" />
+    <rect x="344" y="236" width="12" height="64" rx="6" fill="#c7d2fe" />
+
+    <!-- 核心導覽 AI 音波律動 (象徵語音講解與語言沉浸) -->
+    <!-- 第 1 柱 -->
+    <rect x="202" y="244" width="12" height="34" rx="6" fill="url(#waveGlow)" opacity="0.9" />
+    <!-- 第 2 柱 -->
+    <rect x="224" y="224" width="12" height="74" rx="6" fill="url(#waveGlow)" opacity="0.95" />
+    <!-- 第 3 柱 (核心 AI 導覽聲波) -->
+    <rect x="246" y="200" width="20" height="122" rx="10" fill="url(#corePulse)" />
+    <!-- 第 4 柱 -->
+    <rect x="276" y="224" width="12" height="74" rx="6" fill="url(#waveGlow)" opacity="0.95" />
+    <!-- 第 5 柱 -->
+    <rect x="298" y="244" width="12" height="34" rx="6" fill="url(#waveGlow)" opacity="0.9" />
+  </g>
 </svg>
