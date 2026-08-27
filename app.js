@@ -2458,6 +2458,72 @@ class UIController {
     });
 
     // ─────────────────────────────────────────────────────────
+    // 0.1 系統除錯日誌視窗 (Debug Log Modal)
+    // ─────────────────────────────────────────────────────────
+    window.openDebugModal = () => {
+      const modal = document.getElementById('debug-modal');
+      const list = document.getElementById('debug-log-list');
+      if (!modal || !list) return;
+
+      const logs = window.__DEBUG_LOGS__ || [];
+      if (logs.length === 0) {
+        list.textContent = '✅ 目前無任何運行錯誤。';
+      } else {
+        list.textContent = logs.map((l, i) => 
+          `[#${i + 1} ${l.time}] [${l.type}]\n檔案: ${l.source}:${l.line}:${l.column}\n訊息: ${l.message}\n${l.stack ? '堆疊:\n' + l.stack : ''}\n----------------------------------------`
+        ).join('\n\n');
+      }
+      modal.classList.remove('hidden');
+    };
+
+    window.downloadDebugLog = () => {
+      const logs = window.__DEBUG_LOGS__ || [];
+      const text = `# Audio Tutor PWA — 離線除錯日誌 (Debug Error Log)\n# 匯出時間: ${new Date().toISOString()}\n-------------------------------------------------------------\n\n` +
+        (logs.length === 0 ? '無任何錯誤紀錄。' : logs.map((l, i) => 
+          `[#${i + 1} ${l.time}] [${l.type}]\n檔案: ${l.source}:${l.line}:${l.column}\n訊息: ${l.message}\n${l.stack ? '堆疊:\n' + l.stack : ''}\n`
+        ).join('\n----------------------------------------\n'));
+      
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'debug.log';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      this._showToast('✅ 已下載 debug.log 檔案！');
+    };
+
+    document.getElementById('btn-close-debug-modal')?.addEventListener('click', () => {
+      document.getElementById('debug-modal')?.classList.add('hidden');
+    });
+
+    document.getElementById('btn-download-debug-log')?.addEventListener('click', () => {
+      window.downloadDebugLog();
+    });
+
+    document.getElementById('btn-copy-debug-logs')?.addEventListener('click', () => {
+      const logs = window.__DEBUG_LOGS__ || [];
+      const text = logs.length === 0 ? '無錯誤紀錄' : JSON.stringify(logs, null, 2);
+      navigator.clipboard.writeText(text).then(() => {
+        this._showToast('✅ 錯誤報告已複製至剪貼簿！');
+      }).catch(() => {
+        this._showToast('⚠️ 複製失敗，請手動選取內容', 'error');
+      });
+    });
+
+    document.getElementById('btn-clear-debug-logs')?.addEventListener('click', () => {
+      window.__DEBUG_LOGS__ = [];
+      safeStorage.removeItem('audio_tutor_error_logs');
+      const list = document.getElementById('debug-log-list');
+      if (list) list.textContent = '✅ 目前無任何運行錯誤。';
+      const badge = document.getElementById('debug-error-badge');
+      if (badge) badge.remove();
+      this._showToast('已清除日誌紀錄');
+    });
+
+    // ─────────────────────────────────────────────────────────
     // 1. 置底 App 導覽列切換 (Bottom Navigation Bar)
     // ─────────────────────────────────────────────────────────
     const navItems = document.querySelectorAll('.bottom-nav .nav-item');
