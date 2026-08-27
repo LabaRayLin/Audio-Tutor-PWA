@@ -1929,7 +1929,7 @@ const CURATED_PODCASTS = [
     badge: '🇬🇧 BBC 英語',
     tag: '道地俚語 · 3分鐘速學',
     feedUrl: 'https://podcasts.files.bbci.co.uk/p02pc9wq.rss',
-    cover: 'https://ichef.bbci.co.uk/images/ic/3000x3000/p0hxqkdm.jpg',
+    cover: 'https://ichef.bbci.co.uk/images/ic/3000x3000/p0hxqkgj.jpg',
     color: '#bb1919'
   },
   {
@@ -1941,7 +1941,7 @@ const CURATED_PODCASTS = [
     badge: '🇬🇧 BBC 新聞',
     tag: '國際時事 · 英式新聞 · 30分鐘',
     feedUrl: 'https://podcasts.files.bbci.co.uk/p02nq0gn.rss',
-    cover: 'https://ichef.bbci.co.uk/images/ic/3000x3000/p0hxqk8g.jpg',
+    cover: 'https://ichef.bbci.co.uk/images/ic/3000x3000/p0lqf7hf.jpg',
     color: '#bb1919'
   },
   {
@@ -1953,7 +1953,7 @@ const CURATED_PODCASTS = [
     badge: '🇬🇧 BBC 單字',
     tag: '字彙擴充 · 文法解析',
     feedUrl: 'https://podcasts.files.bbci.co.uk/p02pc9v6.rss',
-    cover: 'https://ichef.bbci.co.uk/images/ic/3000x3000/p0hxqkd0.jpg',
+    cover: 'https://ichef.bbci.co.uk/images/ic/3000x3000/p02h1lr8.jpg',
     color: '#bb1919'
   },
   // TED
@@ -1966,7 +1966,7 @@ const CURATED_PODCASTS = [
     badge: '💡 TED 演講',
     tag: '思維創新 · 科技人文 · 10-15分鐘',
     feedUrl: 'https://feeds.acast.com/public/shows/67587e77c705e441797aff96',
-    cover: 'https://pi.tedcdn.com/r/pb-assets.tedcdn.com/system/ba/assets/1032/TEDTalksDaily_PodcastTile_3000x3000.png',
+    cover: 'https://assets.pippa.io/shows/67587e77c705e441797aff96/show-cover.png',
     color: '#e62b1e'
   },
   {
@@ -1978,7 +1978,7 @@ const CURATED_PODCASTS = [
     badge: '💡 TED 深度',
     tag: '深度訪談 · 啟發思考',
     feedUrl: 'https://feeds.npr.org/510298/podcast.xml',
-    cover: 'https://media.npr.org/assets/img/2023/06/07/ted-radio-hour-podcast-tile-2023_sq-6b58ceca5a11cbe0da7c6ae1e67cfc0a5ffdf319.jpg',
+    cover: 'https://media.npr.org/assets/img/2022/09/23/ted-radio-hour_tile_npr-network-01_sq-3ca507bd2dfa5c26d7db5b41c2b981b24a8789fa.jpg',
     color: '#e62b1e'
   },
   {
@@ -1990,7 +1990,7 @@ const CURATED_PODCASTS = [
     badge: '💡 TED 商業',
     tag: '商業職場 · 領袖思維',
     feedUrl: 'https://feeds.feedburner.com/tedtalksbusiness',
-    cover: 'https://pi.tedcdn.com/r/pb-assets.tedcdn.com/system/ba/assets/1032/TEDTalksDaily_PodcastTile_3000x3000.png',
+    cover: 'https://assets.pippa.io/shows/675727607205a5bc68e57057/show-cover.jpg',
     color: '#e62b1e'
   },
   // NPR
@@ -2003,7 +2003,7 @@ const CURATED_PODCASTS = [
     badge: '🇺🇸 NPR 新聞',
     tag: '5分鐘快訊 · 標準美語',
     feedUrl: 'https://feeds.npr.org/500005/podcast.xml',
-    cover: 'https://media.npr.org/assets/img/2018/08/02/nprnewsnow_podcasttile_sq-13350b5551dc03816664d99c4c730e6206038a8e.png',
+    cover: 'https://media.npr.org/assets/img/2023/01/24/npr-news-now_tile_sq-2334a5fd44563fa94cdcdb27384b0f05987c2d15.jpg',
     color: '#21759b'
   },
   {
@@ -2015,7 +2015,7 @@ const CURATED_PODCASTS = [
     badge: '🇺🇸 NPR 科普',
     tag: '日常科學 · 輕鬆對話 · 10分鐘',
     feedUrl: 'https://feeds.npr.org/510351/podcast.xml',
-    cover: 'https://media.npr.org/assets/img/2019/10/01/shortwave_tile_sq-100236a2979216ae9d8e7cbe3f7e65839211df5a.png',
+    cover: 'https://media.npr.org/assets/img/2022/09/23/short-wave_tile_npr-network-01_sq-c268cdb6be92867b01c6ef7e65aed8d605525779.jpg',
     color: '#21759b'
   },
   {
@@ -2027,7 +2027,7 @@ const CURATED_PODCASTS = [
     badge: '🇺🇸 NPR 生活',
     tag: '生活指南 · 實用溝通 · 15分鐘',
     feedUrl: 'https://feeds.npr.org/510338/podcast.xml',
-    cover: 'https://media.npr.org/assets/img/2019/12/10/lifekit_tile_sq-ea475f3a0972c3d0b8c66e2c39db5c54d1d91a92.png',
+    cover: 'https://media.npr.org/assets/img/2022/09/23/life-kit_tile_npr-network-01_sq-57e850131de55d68e20bbd9dff2408721d7518e2.jpg',
     color: '#21759b'
   },
   {
@@ -2039,7 +2039,7 @@ const CURATED_PODCASTS = [
     badge: '🇺🇸 NPR 經濟',
     tag: '經濟故事 · 商業常識',
     feedUrl: 'https://feeds.npr.org/510289/podcast.xml',
-    cover: 'https://media.npr.org/assets/img/2021/08/18/planet-money_sq-69f88d55169a19dc81045b4c1062f689f4175317.png',
+    cover: 'https://media.npr.org/assets/img/2022/10/24/pm_new_tile_2022_sq-e543deddd0a46a98be481b46e6a72efa6b52236f.jpg',
     color: '#21759b'
   },
   // ESL & Daily
@@ -2052,7 +2052,7 @@ const CURATED_PODCASTS = [
     badge: '🗣️ 美語會話',
     tag: '自然口語 · 美式生活會話',
     feedUrl: 'https://feeds.megaphone.fm/allearsenglish',
-    cover: 'https://ssl-static.libsyn.com/p/assets/7/2/f/2/72f2d93e8a3297a7/AEE_New_Cover_Art_Final_2020.png',
+    cover: 'https://megaphone.imgix.net/podcasts/6d4aae38-48c5-11ed-8e99-57a8c9b5ce2e/image/be489a.jpg?auto=format,compress',
     color: '#f59e0b'
   },
   {
@@ -2064,7 +2064,7 @@ const CURATED_PODCASTS = [
     badge: '🗣️ 生活會話',
     tag: '英式幽默 · 生活對話',
     feedUrl: 'https://teacherluke.co.uk/feed/podcast/',
-    cover: 'https://teacherluke.co.uk/wp-content/uploads/2021/04/LEP-Logo-3000x3000-1.jpg',
+    cover: 'https://teacherluke.co.uk/wp-content/uploads/2026/03/luke-sq-headshot-1-1024x1024.png',
     color: '#d97706'
   }
 ];
@@ -3102,8 +3102,11 @@ class UIController {
     try {
       const feedData = await this.podcasts.fetchFeed(podcast.feedUrl);
       this.currentEpisodes = feedData.episodes || [];
-      if (feedData.cover && coverImg) {
-        coverImg.src = feedData.cover;
+      if (feedData.cover) {
+        podcast.cover = feedData.cover;
+        if (coverImg) coverImg.src = feedData.cover;
+        const cardImg = document.querySelector(`.channel-card[data-id="${podcast.id}"] .channel-cover`);
+        if (cardImg) cardImg.src = feedData.cover;
       }
       loading?.classList.add('hidden');
       this._renderEpisodes(this.currentEpisodes);
