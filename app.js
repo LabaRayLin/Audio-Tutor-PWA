@@ -325,6 +325,9 @@ class NeuralTtsService {
       const spd = rate > 1.2 ? 5 : (rate < 0.9 ? 3 : 4);
       return `https://fanyi.baidu.com/gettts?lan=zh&text=${encodeURIComponent(cleanText)}&spd=${spd}&source=web`;
     }
+    if (voice && (voice.includes('cn') || voice.includes('mainland'))) {
+      return `https://translate.google.com/translate_tts?ie=UTF-8&tl=zh-CN&client=tw-ob&q=${encodeURIComponent(cleanText)}`;
+    }
     return `https://translate.google.com/translate_tts?ie=UTF-8&tl=zh-TW&client=tw-ob&q=${encodeURIComponent(cleanText)}`;
   }
 
@@ -1655,7 +1658,10 @@ class AudioTutorPlayer {
       let audio = this._cloudAudioPlayer;
       if (!audio) {
         audio = new Audio();
+        audio.referrerPolicy = 'no-referrer';
         this._cloudAudioPlayer = audio;
+      } else {
+        audio.referrerPolicy = 'no-referrer';
       }
 
       let hasResolved = false;
@@ -3448,8 +3454,9 @@ class UIController {
     
     if (engine === 'cloud') {
       const cloudVoices = [
-        { id: 'cloud-google', name: '🌐 Google 繁中真人自然音 (流暢生動 · iPhone/Android/電腦推薦 · 零設定)' },
-        { id: 'cloud-baidu', name: '🐼 百度中文標準發音 (字正腔圓 · 零延遲)' }
+        { id: 'cloud-google', name: '🌐 Google 繁體中文自然音 (台灣腔調 · 溫和流暢 · 零設定)' },
+        { id: 'cloud-google-cn', name: '🌐 Google 普通話標準音 (大陸普通話 · 甜美親切 · 零延遲)' },
+        { id: 'cloud-baidu', name: '🐼 百度中文播音腔發音 (字正腔圓 · 播音員語調 · 零延遲)' }
       ];
       cloudVoices.forEach(v => {
         const option = document.createElement('option');
@@ -4362,7 +4369,10 @@ class UIController {
         let audio = this._previewAudioObj;
         if (!audio) {
           audio = new Audio();
+          audio.referrerPolicy = 'no-referrer';
           this._previewAudioObj = audio;
+        } else {
+          audio.referrerPolicy = 'no-referrer';
         }
 
         audio.onended = onFinish;
