@@ -1251,6 +1251,8 @@ class AudioTutorPlayer {
     this._isStopped = false;
     this._playLoopActive = false;
     this.isStreaming = false;
+    this._loopId = 0;
+    this._cloudAudioPlayer = null;
 
     this._bgKeeper = new BackgroundAudioKeeper();
     this._wakeLock = new ScreenWakeLockManager();
@@ -1353,16 +1355,18 @@ class AudioTutorPlayer {
   
   async _playLoop() {
     this._playLoopActive = true;
+    const currentLoopId = ++this._loopId;
 
-    while (!this._isStopped) {
+    while (!this._isStopped && currentLoopId === this._loopId) {
       if (this._paused) { await this._waitForResume(); }
-      if (this._isStopped) break;
+      if (this._isStopped || currentLoopId !== this._loopId) break;
 
       // 若當前進度已達或超過現有句子總數
       if (this.currentIndex >= this.timeline.length) {
         // 如果背景還在流式解析新批次，平滑等待新句子送達 (等待 400ms 後重試)
         if (this.isStreaming) {
           await new Promise(r => setTimeout(r, 400));
+          if (currentLoopId !== this._loopId) break;
           continue;
         } else {
           // 全集解析且播放完畢
@@ -1397,40 +1401,47 @@ class AudioTutorPlayer {
       // 1. 播放原文音訊切片 (Web Audio 毫秒級精準切片 + 淡入淡出)
       this._setState('playing_original');
       await this._playSlice(seg.start, seg.end);
+      if (currentLoopId !== this._loopId || this._isStopped) break;
       
       if (this._paused) { await this._waitForResume(); }
-      if (this._isStopped) break;
+      if (currentLoopId !== this._loopId || this._isStopped) break;
       
       // 2. 朗讀神經網路語音講解
       if (this.shouldExplain(seg) && seg.explanation) {
         this._setState('speaking_explanation');
         await this._speak(seg.explanation, 'zh-TW');
+        if (currentLoopId !== this._loopId || this._isStopped) break;
         
         if (this._paused) { await this._waitForResume(); }
-        if (this._isStopped) break;
+        if (currentLoopId !== this._loopId || this._isStopped) break;
         
         // 3. 重播原文
         if (this.options.replayOriginal) {
           this._setState('replaying_original');
           await this._playSlice(seg.start, seg.end);
+          if (currentLoopId !== this._loopId || this._isStopped) break;
         }
       }
       
-      if (this._isStopped) break;
+      if (currentLoopId !== this._loopId || this._isStopped) break;
 
       // 4. 檢查是否開啟單句無限循環跟讀模式 (A-B Looping / Shadowing)
       if (this.options.loopCurrentSentence) {
         await new Promise(r => setTimeout(r, 800)); // 給予 0.8 秒跟讀緩衝
+        if (currentLoopId !== this._loopId || this._isStopped) break;
         continue; // 重新循環播放當前句
       }
 
+      // 自然播放完成，前進至下一句
       this.currentIndex++;
     }
 
-    this._playLoopActive = false;
-    if (!this._paused) {
-      this._bgKeeper.stop();
-      this._setState('idle');
+    if (currentLoopId === this._loopId) {
+      this._playLoopActive = false;
+      if (!this._paused) {
+        this._bgKeeper.stop();
+        this._setState('idle');
+      }
     }
   }
   
@@ -1467,65 +1478,43 @@ class AudioTutorPlayer {
       try { this.currentGainNode.disconnect(); } catch(e){}
       this.currentGainNode = null;
     }
+    if (this._cloudAudioPlayer) {
+      try {
+        this._cloudAudioPlayer.pause();
+        this._cloudAudioPlayer.currentTime = 0;
+      } catch(e){}
+    }
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
   }
   
   async replayCurrent() {
-    this._stopCurrentNode();
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
-    this._paused = false;
-    if (this._pauseResolve) {
-      this._pauseResolve();
-      this._pauseResolve = null;
-    }
-    if (!this._playLoopActive) {
-      this._playLoop();
-    }
+    await this.jumpToIndex(this.currentIndex);
   }
 
   async jumpToIndex(targetIndex) {
     if (targetIndex < 0 || targetIndex >= this.timeline.length) return;
+    this._loopId = (this._loopId || 0) + 1; // 立即讓正在運行的任何舊迴圈中斷作廢！
     this._stopCurrentNode();
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
     this.currentIndex = targetIndex;
     this._paused = false;
     if (this._pauseResolve) {
       this._pauseResolve();
       this._pauseResolve = null;
     }
-    if (!this._playLoopActive) {
-      this._playLoop();
-    }
+    this._playLoop();
   }
   
   async skipToNext() {
-    this._stopCurrentNode();
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
-    this._paused = false;
-    if (this._pauseResolve) {
-      this._pauseResolve();
-      this._pauseResolve = null;
-    }
     if (this.currentIndex < this.timeline.length - 1) {
-      this.currentIndex++;
-    }
-    if (!this._playLoopActive) {
-      this._playLoop();
+      await this.jumpToIndex(this.currentIndex + 1);
     }
   }
   
   async skipToPrev() {
-    this._stopCurrentNode();
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
-    this._paused = false;
-    if (this._pauseResolve) {
-      this._pauseResolve();
-      this._pauseResolve = null;
-    }
     if (this.currentIndex > 0) {
-      this.currentIndex--;
-    }
-    if (!this._playLoopActive) {
-      this._playLoop();
+      await this.jumpToIndex(this.currentIndex - 1);
     }
   }
 
@@ -4018,10 +4007,10 @@ class UIController {
         ${seg.explanation ? `<p class="transcript-expl">💡 ${this._escapeHtml(seg.explanation)}</p>` : `<p class="transcript-expl text-muted" style="font-size:0.78rem; opacity:0.6;">⏳ 語意解析中...</p>`}
       `;
 
-      // 點擊行跳轉 (若使用者正在反白選字，不誤觸跳轉)
-      row.addEventListener('click', () => {
-        const sel = window.getSelection()?.toString().trim();
-        if (sel && sel.length > 0) return;
+      // 點擊行跳轉 (精準比對，若使用者正在反白選字則不跳轉)
+      row.addEventListener('click', (e) => {
+        const sel = window.getSelection();
+        if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
         if (this.player) {
           this.player.jumpToIndex(idx);
         }
@@ -4077,12 +4066,20 @@ class UIController {
 
   _highlightActiveTranscript(idx) {
     const rows = document.querySelectorAll('.transcript-row');
+    const scrollArea = document.getElementById('transcript-scroll-area');
     rows.forEach((row, i) => {
       const isActive = (i === idx);
       row.classList.toggle('active', isActive);
-      if (isActive) {
-        // 改為 center，讓正在聽的句子永遠保持在視覺焦點中心
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (isActive && scrollArea) {
+        // 僅計算在逐字稿容器內部的精準置中滾動，絕不滾動外層 main 與視窗！
+        const rowTop = row.offsetTop;
+        const rowHeight = row.offsetHeight;
+        const areaHeight = scrollArea.clientHeight;
+        const targetScrollTop = rowTop - (areaHeight / 2) + (rowHeight / 2);
+        scrollArea.scrollTo({
+          top: Math.max(0, targetScrollTop),
+          behavior: 'smooth'
+        });
       }
     });
   }

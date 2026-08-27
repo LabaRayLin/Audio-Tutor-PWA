@@ -1615,6 +1615,8 @@ main {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  position: relative;
   padding: 0.5rem;
   background-color: #ffffff;
   border: 1px solid var(--border);
