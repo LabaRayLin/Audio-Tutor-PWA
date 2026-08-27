@@ -2810,6 +2810,35 @@ class UIController {
       this._showSection('source');
     });
 
+    // 置底迷你播放列與設定頁面一鍵返回播放器
+    const miniPlayerBar = document.getElementById('mini-player-bar');
+    miniPlayerBar?.addEventListener('click', (e) => {
+      if (e.target.closest('#btn-mini-play-pause')) return;
+      this.returnToPlayer();
+    });
+
+    const btnMiniPlayPause = document.getElementById('btn-mini-play-pause');
+    btnMiniPlayPause?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!this.player) return;
+      if (this.player.state === 'paused' || this.player.state === 'idle') {
+        this.player.play();
+      } else {
+        this.player.pause();
+      }
+    });
+
+    const btnMiniExpand = document.getElementById('btn-mini-expand');
+    btnMiniExpand?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.returnToPlayer();
+    });
+
+    const btnSettingsReturn = document.getElementById('btn-settings-return-player');
+    btnSettingsReturn?.addEventListener('click', () => {
+      this.returnToPlayer();
+    });
+
     // ─────────────────────────────────────────────────────────
     // 5. 設定頁面儲存與即時監聽
     // ─────────────────────────────────────────────────────────
@@ -3024,7 +3053,55 @@ class UIController {
       this._loadSettings();
     }
 
+    // 若有正在學習中的播放器，顯示 Mini Player 與設定頁置頂提示列
+    if (this.player && this.player.timeline && this.player.timeline.length > 0) {
+      this._showMiniPlayer();
+      const settingsBanner = document.getElementById('settings-now-playing-banner');
+      if (settingsBanner) {
+        settingsBanner.classList.toggle('hidden', tabName !== 'settings');
+      }
+    } else {
+      this._hideMiniPlayer();
+    }
+
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  returnToPlayer() {
+    if (!this.player) return;
+    this.activeTab = 'player';
+    this._showSection('player');
+    
+    // 清除底部導覽列 active 狀態
+    document.querySelectorAll('.bottom-nav .nav-item').forEach(item => item.classList.remove('active'));
+
+    // 滾動並高亮當前句
+    this._highlightActiveTranscript(this.player.currentIndex);
+  }
+
+  _showMiniPlayer() {
+    const bar = document.getElementById('mini-player-bar');
+    if (!bar || !this.player) return;
+
+    const curSeg = this.player.timeline[this.player.currentIndex];
+    const fileName = document.getElementById('file-name')?.textContent || 'Audio Tutor 學習中';
+    const isPlaying = this.player.state !== 'paused' && this.player.state !== 'idle';
+
+    const titleEl = document.getElementById('mini-player-title');
+    if (titleEl) titleEl.textContent = `${fileName} (第 ${this.player.currentIndex + 1} 句)`;
+
+    const subEl = document.getElementById('mini-player-sub');
+    if (subEl) subEl.textContent = curSeg?.text || '點擊返回完整播放畫面';
+
+    const btnPlay = document.getElementById('btn-mini-play-pause');
+    if (btnPlay) btnPlay.textContent = isPlaying ? '⏸️' : '▶️';
+
+    bar.classList.remove('hidden');
+  }
+
+  _hideMiniPlayer() {
+    document.getElementById('mini-player-bar')?.classList.add('hidden');
+    document.getElementById('settings-now-playing-banner')?.classList.add('hidden');
   }
 
   _renderPodcastChannels(filter = 'all') {
@@ -4096,6 +4173,10 @@ class UIController {
     };
     if (stateEl) stateEl.textContent = stateLabels[state] || state;
     if (btnPlayPause) btnPlayPause.textContent = (state === 'paused' || state === 'idle') ? '▶️' : '⏸️';
+
+    // 同步更新 Mini Player 播放/暫停圖示
+    const miniPlayBtn = document.getElementById('btn-mini-play-pause');
+    if (miniPlayBtn) miniPlayBtn.textContent = (state === 'paused' || state === 'idle') ? '▶️' : '⏸️';
     
     // 更新 MediaSession
     if (this.player && 'mediaSession' in navigator) {
@@ -4132,6 +4213,12 @@ class UIController {
 
     // 同步高亮與滾動逐字稿
     this._highlightActiveTranscript(idx);
+
+    // 若 Mini Player 正在顯示中，同步更新其文字與進度
+    const miniBar = document.getElementById('mini-player-bar');
+    if (miniBar && !miniBar.classList.contains('hidden')) {
+      this._showMiniPlayer();
+    }
   }
   
   _updateProgress(stage, pct, msg) {
@@ -4183,6 +4270,7 @@ class UIController {
       tabSections.forEach(sec => sec.classList.add('hidden'));
       procSec?.classList.add('hidden');
       playerSec?.classList.remove('hidden');
+      this._hideMiniPlayer();
     }
   }
   

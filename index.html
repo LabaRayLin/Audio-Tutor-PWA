@@ -87,7 +87,7 @@
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Audio Tutor — 聽覺沉浸式學習</title>
-  <link rel="stylesheet" href="style.css?v=7.0">
+  <link rel="stylesheet" href="style.css?v=7.1">
   <link rel="manifest" href="manifest.json?v=6.6">
   <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -237,6 +237,14 @@
           <div class="section-card-header">
             <h3>⚙️ 系統與學習設定</h3>
             <p class="subtext">設定您的 API 密鑰與個人化 AI 導覽偏好</p>
+          </div>
+
+          <!-- Return to Player Banner (若正在播放學習中，提供一鍵返回) -->
+          <div id="settings-now-playing-banner" class="settings-return-banner hidden">
+            <div class="banner-left">
+              <span>🎧 正在學習播放中</span>
+            </div>
+            <button id="btn-settings-return-player" class="btn-return-player" type="button">返回播放畫面 ↗</button>
           </div>
 
           <!-- API Keys -->
@@ -464,7 +472,22 @@
           </div>
         </div>
       </section>
-    </main>
+    <!-- Floating Mini Player Bar (置底迷你播放列，切換至設定/其他分頁時可一鍵秒回播放器) -->
+    <div id="mini-player-bar" class="mini-player-bar hidden">
+      <div class="mini-player-left" id="mini-player-click-area">
+        <div class="mini-player-icon-wrap">
+          <span class="mini-player-icon">🎧</span>
+        </div>
+        <div class="mini-player-texts">
+          <span id="mini-player-title" class="mini-player-title truncate">正在播放學習中</span>
+          <span id="mini-player-sub" class="mini-player-sub truncate">點擊返回完整播放畫面</span>
+        </div>
+      </div>
+      <div class="mini-player-actions">
+        <button id="btn-mini-play-pause" class="mini-btn-play" title="播放 / 暫停" type="button">⏸️</button>
+        <button id="btn-mini-expand" class="mini-btn-expand" title="返回完整畫面" type="button">展開 ↗</button>
+      </div>
+    </div>
 
     <!-- Bottom Navigation Bar (置底 App 導覽列) -->
     <nav id="bottom-nav" class="bottom-nav">
@@ -604,6 +627,6 @@
       </div>
     </div>
   </div>
-  <script src="app.js?v=7.0"></script>
+  <script src="app.js?v=7.1"></script>
 </body>
 </html>
