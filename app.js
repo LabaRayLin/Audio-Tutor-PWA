@@ -1965,7 +1965,7 @@ const CURATED_PODCASTS = [
     desc: '每日精選各領域頂尖思想家、科學家與創新家的精彩演講。',
     badge: '💡 TED 演講',
     tag: '思維創新 · 科技人文 · 10-15分鐘',
-    feedUrl: 'https://feeds.feedburner.com/TEDTalks_audio',
+    feedUrl: 'https://feeds.acast.com/public/shows/67587e77c705e441797aff96',
     cover: 'https://pi.tedcdn.com/r/pb-assets.tedcdn.com/system/ba/assets/1032/TEDTalksDaily_PodcastTile_3000x3000.png',
     color: '#e62b1e'
   },
@@ -2051,7 +2051,7 @@ const CURATED_PODCASTS = [
     desc: '「Connection NOT Perfection!」美國生活文化、日常對話技巧與自然流利美語。',
     badge: '🗣️ 美語會話',
     tag: '自然口語 · 美式生活會話',
-    feedUrl: 'https://allearsenglish.libsyn.com/rss',
+    feedUrl: 'https://feeds.megaphone.fm/allearsenglish',
     cover: 'https://ssl-static.libsyn.com/p/assets/7/2/f/2/72f2d93e8a3297a7/AEE_New_Cover_Art_Final_2020.png',
     color: '#f59e0b'
   },
@@ -2081,41 +2081,130 @@ class PodcastManager {
       return this.cachedFeeds.get(feedUrl);
     }
 
-    let xmlText = null;
-    // 1. Try local server proxy
+    let feedData = null;
+
+    // 1. 本地除錯伺服器 Proxy (http://127.0.0.1:8765/api/proxy?url=...)
+    // 線下使用 file:/// 或本地開啟時，零 CORS 限制，極速秒開！
     try {
-      const res = await fetch('/api/proxy?url=' + encodeURIComponent(feedUrl));
+      const localProxyUrl = `http://127.0.0.1:8765/api/proxy?url=${encodeURIComponent(feedUrl)}`;
+      const res = await fetch(localProxyUrl, { signal: AbortSignal.timeout(3000) });
       if (res.ok) {
         const text = await res.text();
-        if (text && (text.includes('<rss') || text.includes('<feed') || text.includes('<xml') || text.includes('<channel'))) {
-          xmlText = text;
+        if (text && (text.includes('<rss') || text.includes('<feed') || text.includes('<channel'))) {
+          feedData = this.parseRssXml(text, feedUrl);
         }
       }
-    } catch (e) {
-      console.warn('Local proxy failed:', e);
-    }
+    } catch (e) {}
 
-    // 2. Try public proxy fallback
-    if (!xmlText) {
+    // 2. 本地相對路徑 Proxy (若透過 python server.py 運行)
+    if (!feedData && window.location.protocol.startsWith('http')) {
       try {
-        const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(feedUrl)}`);
-        if (res.ok) xmlText = await res.text();
-      } catch (e) {
-        console.warn('Public proxy failed:', e);
-      }
+        const res = await fetch('/api/proxy?url=' + encodeURIComponent(feedUrl), { signal: AbortSignal.timeout(3000) });
+        if (res.ok) {
+          const text = await res.text();
+          if (text && (text.includes('<rss') || text.includes('<feed') || text.includes('<channel'))) {
+            feedData = this.parseRssXml(text, feedUrl);
+          }
+        }
+      } catch (e) {}
     }
 
-    // 3. Try direct fetch
-    if (!xmlText) {
-      const res = await fetch(feedUrl);
-      xmlText = await res.text();
+    // 3. 直連原生支援 CORS 的 RSS (如 BBC, Libsyn 等)
+    if (!feedData) {
+      try {
+        const res = await fetch(feedUrl, { signal: AbortSignal.timeout(4000) });
+        if (res.ok) {
+          const text = await res.text();
+          if (text && (text.includes('<rss') || text.includes('<feed') || text.includes('<channel'))) {
+            feedData = this.parseRssXml(text, feedUrl);
+          }
+        }
+      } catch (e) {}
     }
 
-    if (!xmlText) throw new Error('無法讀取 RSS 來源');
+    // 4. 公開的高速 RSS 轉換服務 (rss2json.com · 支援跨域、自動處理重新導向)
+    if (!feedData) {
+      try {
+        const res = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feedUrl)}`, { signal: AbortSignal.timeout(5000) });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.status === 'ok' && json.items && json.items.length > 0) {
+            feedData = this._parseRss2Json(json, feedUrl);
+          }
+        }
+      } catch (e) {}
+    }
 
-    const feedData = this.parseRssXml(xmlText, feedUrl);
+    // 5. CodeTabs CORS Proxy 備援
+    if (!feedData) {
+      try {
+        const res = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(feedUrl)}`, { signal: AbortSignal.timeout(6000) });
+        if (res.ok) {
+          const text = await res.text();
+          if (text && (text.includes('<rss') || text.includes('<feed') || text.includes('<channel'))) {
+            feedData = this.parseRssXml(text, feedUrl);
+          }
+        }
+      } catch (e) {}
+    }
+
+    // 6. AllOrigins Proxy 備援
+    if (!feedData) {
+      try {
+        const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(feedUrl)}`, { signal: AbortSignal.timeout(6000) });
+        if (res.ok) {
+          const json = await res.json();
+          if (json && json.contents) {
+            feedData = this.parseRssXml(json.contents, feedUrl);
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!feedData || !feedData.episodes || feedData.episodes.length === 0) {
+      throw new Error('無法載入節目清單 (請確認網路連線或稍後再試)');
+    }
+
     this.cachedFeeds.set(feedUrl, feedData);
     return feedData;
+  }
+
+  _parseRss2Json(json, feedUrl) {
+    const feed = json.feed || {};
+    const channelTitle = feed.title || 'Podcast 節目';
+    const channelDesc = (feed.description || '').replace(/<[^>]*>/g, '').trim();
+    const channelCover = feed.image || '';
+
+    const episodes = (json.items || []).map((item, idx) => {
+      const audioUrl = item.enclosure?.link || '';
+      const rawDur = item.enclosure?.duration || '';
+      const duration = this._formatDuration(rawDur);
+
+      let pubDate = '';
+      if (item.pubDate) {
+        try {
+          const d = new Date(item.pubDate);
+          if (!isNaN(d.getTime())) pubDate = d.toLocaleDateString('zh-TW', { year: 'numeric', month: 'short', day: 'numeric' });
+          else pubDate = String(item.pubDate).slice(0, 10);
+        } catch (e) { pubDate = item.pubDate; }
+      }
+
+      return {
+        id: item.guid || item.link || `ep-${idx}`,
+        title: item.title || `單集 #${idx + 1}`,
+        pubDate: pubDate,
+        duration: duration,
+        description: (item.description || item.content || '').replace(/<[^>]*>/g, '').trim().slice(0, 300),
+        audioUrl: audioUrl
+      };
+    }).filter(ep => ep.audioUrl && (ep.audioUrl.startsWith('http://') || ep.audioUrl.startsWith('https://')));
+
+    return {
+      title: channelTitle,
+      description: channelDesc,
+      cover: channelCover,
+      episodes: episodes
+    };
   }
 
   parseRssXml(xmlText, feedUrl) {
@@ -2959,6 +3048,7 @@ class UIController {
     filtered.forEach(podcast => {
       const card = document.createElement('div');
       card.className = 'channel-card';
+      card.setAttribute('data-id', podcast.id);
       card.style.setProperty('--channel-color', podcast.color || '#4f46e5');
 
       card.innerHTML = `
@@ -3018,6 +3108,7 @@ class UIController {
       loading?.classList.add('hidden');
       this._renderEpisodes(this.currentEpisodes);
     } catch (e) {
+      console.error('[Podcast] 無法載入節目清單:', e);
       loading?.classList.add('hidden');
       if (list) list.innerHTML = `<div class="empty-state">❌ 無法載入節目清單 (${this._escapeHtml(e.message)})<br>請確認網路連線或稍後再試。</div>`;
     }
