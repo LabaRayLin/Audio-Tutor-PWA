@@ -2259,6 +2259,36 @@ class PodcastManager {
     };
   }
 
+  /**
+   * 搜尋全球 Apple Podcasts 節目庫 (JSONP 0-CORS 跨域免代理)
+   */
+  async searchPodcasts(query) {
+    const cleanQuery = (query || '').trim();
+    if (!cleanQuery) return [];
+
+    const itunesUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(cleanQuery)}&entity=podcast&limit=30`;
+    const json = await this._fetchJsonp(itunesUrl, 8000);
+    if (!json || !json.results) return [];
+
+    return json.results.map((item, idx) => {
+      const genre = item.primaryGenreName || (item.genres && item.genres[0]) || 'Podcast';
+      const count = item.trackCount || 0;
+      return {
+        id: `apple-search-${item.collectionId || idx}`,
+        appleId: String(item.collectionId || ''),
+        category: 'search',
+        provider: item.artistName || 'Apple Podcasts',
+        title: item.collectionName || '未命名節目',
+        desc: `分類：${genre} · 共 ${count} 集 · 出品：${item.artistName || '官方'}`,
+        badge: `🎙️ ${genre}`,
+        tag: `${count} 集 · ${item.country || '全球'}`,
+        feedUrl: item.feedUrl || '',
+        cover: item.artworkUrl600 || item.artworkUrl100 || 'icon.svg',
+        color: '#4f46e5'
+      };
+    }).filter(p => p.title && (p.appleId || p.feedUrl));
+  }
+
   _parseRss2Json(json, feedUrl) {
     const feed = json.feed || {};
     const channelTitle = feed.title || 'Podcast 節目';
@@ -2729,7 +2759,57 @@ class UIController {
       });
     });
 
-    // 返回精選頻道清單
+    // 全球 Podcast 關鍵字搜尋
+    const globalSearchInput = document.getElementById('podcast-global-search-input');
+    const btnDoGlobalSearch = document.getElementById('btn-do-global-search');
+    const btnClearGlobalSearch = document.getElementById('btn-clear-global-search');
+    const btnResetSearch = document.getElementById('btn-reset-search');
+
+    const triggerSearch = () => {
+      const q = globalSearchInput?.value.trim();
+      if (q) this._handlePodcastGlobalSearch(q);
+      else this._resetPodcastGlobalSearch();
+    };
+
+    btnDoGlobalSearch?.addEventListener('click', triggerSearch);
+    globalSearchInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') triggerSearch();
+    });
+    globalSearchInput?.addEventListener('input', (e) => {
+      if (e.target.value.trim()) {
+        btnClearGlobalSearch?.classList.remove('hidden');
+      } else {
+        btnClearGlobalSearch?.classList.add('hidden');
+      }
+    });
+
+    btnClearGlobalSearch?.addEventListener('click', () => {
+      this._resetPodcastGlobalSearch();
+    });
+
+    btnResetSearch?.addEventListener('click', () => {
+      this._resetPodcastGlobalSearch();
+    });
+
+    // 熱門推薦標籤點擊搜尋
+    const quickTagBtns = document.querySelectorAll('.quick-tag-btn');
+    quickTagBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const kw = btn.getAttribute('data-kw');
+        if (kw) {
+          if (globalSearchInput) globalSearchInput.value = kw;
+          this._handlePodcastGlobalSearch(kw);
+        }
+      });
+    });
+
+    // 自訂網址標籤頁快速切換至全球搜尋
+    document.getElementById('btn-jump-to-global-search')?.addEventListener('click', () => {
+      this.switchTab('podcast');
+      setTimeout(() => {
+        globalSearchInput?.focus();
+      }, 150);
+    });
     const btnBackToChannels = document.getElementById('btn-back-to-channels');
     btnBackToChannels?.addEventListener('click', () => {
       this.podcasts.stopPreview();
@@ -3206,14 +3286,19 @@ class UIController {
     document.getElementById('settings-now-playing-banner')?.classList.add('hidden');
   }
 
-  _renderPodcastChannels(filter = 'all') {
+  _renderPodcastChannels(filter = 'all', customList = null) {
     const grid = document.getElementById('podcast-channel-grid');
     if (!grid) return;
 
     grid.innerHTML = '';
-    const filtered = filter === 'all' ? CURATED_PODCASTS : CURATED_PODCASTS.filter(p => p.category === filter);
+    const list = customList || (filter === 'all' ? CURATED_PODCASTS : CURATED_PODCASTS.filter(p => p.category === filter));
 
-    filtered.forEach(podcast => {
+    if (!list || list.length === 0) {
+      grid.innerHTML = '<div class="empty-state">未找到相關 Podcast 節目，請更換關鍵字重新搜尋。</div>';
+      return;
+    }
+
+    list.forEach(podcast => {
       const card = document.createElement('div');
       card.className = 'channel-card';
       card.setAttribute('data-id', podcast.id);
@@ -3221,15 +3306,15 @@ class UIController {
 
       card.innerHTML = `
         <div class="channel-header">
-          <img class="channel-cover" src="${podcast.cover}" alt="${podcast.title}" loading="lazy" onerror="this.src='icon.svg'">
+          <img class="channel-cover" src="${podcast.cover}" alt="${this._escapeHtml(podcast.title)}" loading="lazy" onerror="this.src='icon.svg'">
           <div class="channel-info">
-            <span class="channel-badge-tag">${podcast.badge}</span>
-            <h3 class="channel-title">${podcast.title}</h3>
+            <span class="channel-badge-tag">${this._escapeHtml(podcast.badge)}</span>
+            <h3 class="channel-title">${this._escapeHtml(podcast.title)}</h3>
           </div>
         </div>
-        <p class="channel-desc">${podcast.desc}</p>
+        <p class="channel-desc">${this._escapeHtml(podcast.desc)}</p>
         <div class="channel-footer">
-          <span>${podcast.tag}</span>
+          <span>${this._escapeHtml(podcast.tag)}</span>
           <span class="channel-cta">瀏覽節目 →</span>
         </div>
       `;
@@ -3237,6 +3322,68 @@ class UIController {
       card.addEventListener('click', () => this._openPodcastChannel(podcast));
       grid.appendChild(card);
     });
+  }
+
+  async _handlePodcastGlobalSearch(query) {
+    const cleanQuery = (query || '').trim();
+    if (!cleanQuery) {
+      this._resetPodcastGlobalSearch();
+      return;
+    }
+
+    const input = document.getElementById('podcast-global-search-input');
+    if (input) input.value = cleanQuery;
+
+    const clearBtn = document.getElementById('btn-clear-global-search');
+    clearBtn?.classList.remove('hidden');
+
+    const statusBox = document.getElementById('podcast-search-status');
+    const statusText = document.getElementById('podcast-search-status-text');
+    const filterBar = document.getElementById('podcast-filter-bar');
+    const loading = document.getElementById('podcast-search-loading');
+    const grid = document.getElementById('podcast-channel-grid');
+    const epView = document.getElementById('podcast-episode-view');
+
+    // 隱藏單集視圖，切換回頻道搜尋網格
+    epView?.classList.add('hidden');
+    filterBar?.classList.add('hidden');
+    grid?.classList.add('hidden');
+    loading?.classList.remove('hidden');
+    statusBox?.classList.add('hidden');
+
+    try {
+      const results = await this.podcasts.searchPodcasts(cleanQuery);
+      loading?.classList.add('hidden');
+      grid?.classList.remove('hidden');
+      statusBox?.classList.remove('hidden');
+
+      if (statusText) {
+        statusText.textContent = `🔍 全球搜尋「${cleanQuery}」：共找到 ${results.length} 個 Podcast 節目`;
+      }
+
+      this._renderPodcastChannels('all', results);
+    } catch (e) {
+      console.error('[Podcast] 全球搜尋失敗:', e);
+      loading?.classList.add('hidden');
+      grid?.classList.remove('hidden');
+      statusBox?.classList.remove('hidden');
+      if (statusText) statusText.textContent = `❌ 搜尋失敗，請檢查網路連線`;
+      if (grid) grid.innerHTML = `<div class="empty-state">搜尋時發生錯誤，請稍後再試。</div>`;
+    }
+  }
+
+  _resetPodcastGlobalSearch() {
+    const input = document.getElementById('podcast-global-search-input');
+    if (input) input.value = '';
+
+    document.getElementById('btn-clear-global-search')?.classList.add('hidden');
+    document.getElementById('podcast-search-status')?.classList.add('hidden');
+    document.getElementById('podcast-filter-bar')?.classList.remove('hidden');
+    document.getElementById('podcast-search-loading')?.classList.add('hidden');
+    document.getElementById('podcast-channel-grid')?.classList.remove('hidden');
+
+    const activeFilter = document.querySelector('.filter-pill.active')?.getAttribute('data-filter') || 'all';
+    this._renderPodcastChannels(activeFilter);
   }
 
   async _openPodcastChannel(podcast) {

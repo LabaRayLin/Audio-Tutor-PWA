@@ -88,8 +88,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="referrer" content="no-referrer">
   <title>Audio Tutor — 聽覺沉浸式學習</title>
-  <link rel="stylesheet" href="style.css?v=7.4">
-  <link rel="manifest" href="manifest.json?v=7.4">
+  <link rel="stylesheet" href="style.css?v=7.5">
+  <link rel="manifest" href="manifest.json?v=7.5">
   <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -124,13 +124,45 @@
     <main id="app-main">
       <!-- 1. Curated Podcast Section (精選) -->
       <section id="podcast-section" class="tab-section">
+        <!-- Global Podcast Search Box -->
+        <div class="podcast-search-container">
+          <div class="podcast-search-box">
+            <span class="podcast-search-icon">🔍</span>
+            <input type="text" id="podcast-global-search-input" placeholder="搜尋全球 Podcast 節目關鍵字 (如 Huberman, BBC, 英語聽力)..." class="podcast-search-input">
+            <button id="btn-clear-global-search" class="btn-clear-search hidden" title="清除搜尋">✕</button>
+            <button id="btn-do-global-search" class="btn-global-search">搜尋</button>
+          </div>
+          <!-- Quick search tag pills -->
+          <div class="podcast-quick-tags">
+            <span class="quick-tags-label">💡 熱門推薦：</span>
+            <button class="quick-tag-btn" data-kw="Huberman Lab">Huberman Lab</button>
+            <button class="quick-tag-btn" data-kw="The Daily">The Daily</button>
+            <button class="quick-tag-btn" data-kw="BBC Learning English">BBC English</button>
+            <button class="quick-tag-btn" data-kw="TED Talks">TED Talks</button>
+            <button class="quick-tag-btn" data-kw="Planet Money">Planet Money</button>
+            <button class="quick-tag-btn" data-kw="英語聽力">英語聽力</button>
+          </div>
+        </div>
+
+        <!-- Search Status Bar (shown when search results are active) -->
+        <div id="podcast-search-status" class="podcast-search-status hidden">
+          <span id="podcast-search-status-text" class="search-status-text"></span>
+          <button id="btn-reset-search" class="btn-reset-search">← 返回全部精選推薦</button>
+        </div>
+
         <!-- Filter pills -->
-        <div class="podcast-filter-bar">
+        <div id="podcast-filter-bar" class="podcast-filter-bar">
           <button class="filter-pill active" data-filter="all">全部精選</button>
           <button class="filter-pill" data-filter="bbc">🇬🇧 BBC 英語</button>
           <button class="filter-pill" data-filter="ted">💡 TED 思想</button>
           <button class="filter-pill" data-filter="npr">🇺🇸 NPR 旗艦</button>
           <button class="filter-pill" data-filter="daily">🗣️ 生活與口語</button>
+        </div>
+
+        <!-- Search Loading Indicator -->
+        <div id="podcast-search-loading" class="episodes-loading hidden">
+          <div class="spinner"></div>
+          <p>正在搜尋全球 Apple Podcasts 節目庫...</p>
         </div>
 
         <!-- Channel Grid View -->
@@ -198,6 +230,10 @@
           <div class="custom-input-row">
             <input type="url" id="custom-url-input" placeholder="https://example.com/feed.xml 或音訊連結..." class="custom-url-input">
             <button id="btn-parse-custom-url" class="btn-primary">解析載入</button>
+          </div>
+          <div class="custom-search-hint">
+            <span>💡 不知道 RSS 網址？</span>
+            <button id="btn-jump-to-global-search" class="btn-text-link">👉 點此直接用關鍵字搜尋全球 Podcast 節目</button>
           </div>
           <div class="quick-preset-links">
             <span class="preset-title">💡 常用推薦快捷填入：</span>
@@ -628,6 +664,6 @@
       </div>
     </div>
   </div>
-  <script src="app.js?v=7.4"></script>
+  <script src="app.js?v=7.5"></script>
 </body>
 </html>
