@@ -1912,6 +1912,7 @@ const CURATED_PODCASTS = [
     badge: '🇬🇧 BBC 英語',
     tag: '英式發音 · 學習必備 · 6分鐘',
     feedUrl: 'https://podcasts.files.bbci.co.uk/p02pc9tn.rss',
+    appleId: '262026947',
     cover: 'https://ichef.bbci.co.uk/images/ic/3000x3000/p0hxqkd0.jpg',
     color: '#bb1919'
   },
@@ -1924,6 +1925,7 @@ const CURATED_PODCASTS = [
     badge: '🇬🇧 BBC 英語',
     tag: '道地俚語 · 3分鐘速學',
     feedUrl: 'https://podcasts.files.bbci.co.uk/p02pc9wq.rss',
+    appleId: '262026989',
     cover: 'https://ichef.bbci.co.uk/images/ic/3000x3000/p0hxqkgj.jpg',
     color: '#bb1919'
   },
@@ -1936,6 +1938,7 @@ const CURATED_PODCASTS = [
     badge: '🇬🇧 BBC 新聞',
     tag: '國際時事 · 英式新聞 · 30分鐘',
     feedUrl: 'https://podcasts.files.bbci.co.uk/p02nq0gn.rss',
+    appleId: '135067274',
     cover: 'https://ichef.bbci.co.uk/images/ic/3000x3000/p0lqf7hf.jpg',
     color: '#bb1919'
   },
@@ -1948,6 +1951,7 @@ const CURATED_PODCASTS = [
     badge: '🇬🇧 BBC 單字',
     tag: '字彙擴充 · 文法解析',
     feedUrl: 'https://podcasts.files.bbci.co.uk/p02pc9v6.rss',
+    appleId: '1036379102',
     cover: 'https://ichef.bbci.co.uk/images/ic/3000x3000/p02h1lr8.jpg',
     color: '#bb1919'
   },
@@ -1961,6 +1965,7 @@ const CURATED_PODCASTS = [
     badge: '💡 TED 演講',
     tag: '思維創新 · 科技人文 · 10-15分鐘',
     feedUrl: 'https://feeds.acast.com/public/shows/67587e77c705e441797aff96',
+    appleId: '160904630',
     cover: 'https://assets.pippa.io/shows/67587e77c705e441797aff96/show-cover.png',
     color: '#e62b1e'
   },
@@ -1973,6 +1978,7 @@ const CURATED_PODCASTS = [
     badge: '💡 TED 深度',
     tag: '深度訪談 · 啟發思考',
     feedUrl: 'https://feeds.npr.org/510298/podcast.xml',
+    appleId: '523121474',
     cover: 'https://media.npr.org/assets/img/2022/09/23/ted-radio-hour_tile_npr-network-01_sq-3ca507bd2dfa5c26d7db5b41c2b981b24a8789fa.jpg',
     color: '#e62b1e'
   },
@@ -1985,6 +1991,7 @@ const CURATED_PODCASTS = [
     badge: '💡 TED 商業',
     tag: '商業職場 · 領袖思維',
     feedUrl: 'https://feeds.feedburner.com/tedtalksbusiness',
+    appleId: '470622782',
     cover: 'https://assets.pippa.io/shows/675727607205a5bc68e57057/show-cover.jpg',
     color: '#e62b1e'
   },
@@ -1998,6 +2005,7 @@ const CURATED_PODCASTS = [
     badge: '🇺🇸 NPR 新聞',
     tag: '5分鐘快訊 · 標準美語',
     feedUrl: 'https://feeds.npr.org/500005/podcast.xml',
+    appleId: '121493675',
     cover: 'https://media.npr.org/assets/img/2023/01/24/npr-news-now_tile_sq-2334a5fd44563fa94cdcdb27384b0f05987c2d15.jpg',
     color: '#21759b'
   },
@@ -2010,6 +2018,7 @@ const CURATED_PODCASTS = [
     badge: '🇺🇸 NPR 科普',
     tag: '日常科學 · 輕鬆對話 · 10分鐘',
     feedUrl: 'https://feeds.npr.org/510351/podcast.xml',
+    appleId: '1482575855',
     cover: 'https://media.npr.org/assets/img/2022/09/23/short-wave_tile_npr-network-01_sq-c268cdb6be92867b01c6ef7e65aed8d605525779.jpg',
     color: '#21759b'
   },
@@ -2022,6 +2031,7 @@ const CURATED_PODCASTS = [
     badge: '🇺🇸 NPR 生活',
     tag: '生活指南 · 實用溝通 · 15分鐘',
     feedUrl: 'https://feeds.npr.org/510338/podcast.xml',
+    appleId: '1461493560',
     cover: 'https://media.npr.org/assets/img/2022/09/23/life-kit_tile_npr-network-01_sq-57e850131de55d68e20bbd9dff2408721d7518e2.jpg',
     color: '#21759b'
   },
@@ -2034,6 +2044,7 @@ const CURATED_PODCASTS = [
     badge: '🇺🇸 NPR 經濟',
     tag: '經濟故事 · 商業常識',
     feedUrl: 'https://feeds.npr.org/510289/podcast.xml',
+    appleId: '290783428',
     cover: 'https://media.npr.org/assets/img/2022/10/24/pm_new_tile_2022_sq-e543deddd0a46a98be481b46e6a72efa6b52236f.jpg',
     color: '#21759b'
   },
@@ -2047,6 +2058,7 @@ const CURATED_PODCASTS = [
     badge: '🗣️ 美語會話',
     tag: '自然口語 · 美式生活會話',
     feedUrl: 'https://feeds.megaphone.fm/allearsenglish',
+    appleId: '751574016',
     cover: 'https://megaphone.imgix.net/podcasts/6d4aae38-48c5-11ed-8e99-57a8c9b5ce2e/image/be489a.jpg?auto=format,compress',
     color: '#f59e0b'
   },
@@ -2059,10 +2071,12 @@ const CURATED_PODCASTS = [
     badge: '🗣️ 生活會話',
     tag: '英式幽默 · 生活對話',
     feedUrl: 'https://teacherluke.co.uk/feed/podcast/',
+    appleId: '312059190',
     cover: 'https://teacherluke.co.uk/wp-content/uploads/2026/03/luke-sq-headshot-1-1024x1024.png',
     color: '#d97706'
   }
 ];
+if (typeof window !== 'undefined') window.CURATED_PODCASTS = CURATED_PODCASTS;
 
 class PodcastManager {
   constructor() {
@@ -2071,30 +2085,72 @@ class PodcastManager {
     this.currentPlayingUrl = null;
   }
 
-  async fetchFeed(feedUrl) {
+  _fetchJsonp(url, timeoutMs = 6000) {
+    return new Promise((resolve, reject) => {
+      const cbName = 'itunes_cb_' + Math.random().toString(36).slice(2) + '_' + Date.now();
+      const script = document.createElement('script');
+      let timer = null;
+
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        if (script.parentNode) script.parentNode.removeChild(script);
+        try { delete window[cbName]; } catch (e) { window[cbName] = undefined; }
+      };
+
+      timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('JSONP request timed out'));
+      }, timeoutMs);
+
+      window[cbName] = (data) => {
+        cleanup();
+        resolve(data);
+      };
+
+      script.onerror = (err) => {
+        cleanup();
+        reject(new Error('JSONP script loading error'));
+      };
+
+      const sep = url.includes('?') ? '&' : '?';
+      script.src = `${url}${sep}callback=${cbName}`;
+      document.head.appendChild(script);
+    });
+  }
+
+  async fetchFeed(feedUrl, appleId = null) {
     if (this.cachedFeeds.has(feedUrl)) {
       return this.cachedFeeds.get(feedUrl);
     }
 
+    // 自動反查 CURATED_PODCASTS 是否有對應的 appleId
+    if (!appleId) {
+      const found = CURATED_PODCASTS.find(p => p.feedUrl === feedUrl);
+      if (found && found.appleId) appleId = found.appleId;
+    }
+
     let feedData = null;
 
-    // 1. 本地除錯伺服器 Proxy (http://127.0.0.1:8765/api/proxy?url=...)
-    // 線下使用 file:/// 或本地開啟時，零 CORS 限制，極速秒開！
-    try {
-      const localProxyUrl = `http://127.0.0.1:8765/api/proxy?url=${encodeURIComponent(feedUrl)}`;
-      const res = await fetch(localProxyUrl, { signal: AbortSignal.timeout(3000) });
-      if (res.ok) {
-        const text = await res.text();
-        if (text && (text.includes('<rss') || text.includes('<feed') || text.includes('<channel'))) {
-          feedData = this.parseRssXml(text, feedUrl);
-        }
-      }
-    } catch (e) {}
-
-    // 2. 本地相對路徑 Proxy (若透過 python server.py 運行)
-    if (!feedData && window.location.protocol.startsWith('http')) {
+    // 1. Apple Podcasts API (0-CORS JSONP, 極速 Apple 官方全球 CDN，解決 Acast 等 8MB 巨大 XML 無法載入問題)
+    if (appleId) {
       try {
-        const res = await fetch('/api/proxy?url=' + encodeURIComponent(feedUrl), { signal: AbortSignal.timeout(3000) });
+        const itunesUrl = `https://itunes.apple.com/lookup?id=${appleId}&entity=podcastEpisode&limit=50`;
+        const json = await this._fetchJsonp(itunesUrl, 5000);
+        if (json && json.resultCount > 0 && json.results && json.results.length > 1) {
+          feedData = this._parseItunesLookup(json, feedUrl);
+        }
+      } catch (e) {
+        console.warn('[Podcast] iTunes lookup failed, falling back to RSS:', e);
+      }
+    }
+
+    // 2. 本地除錯伺服器 Proxy (http://127.0.0.1:8765/api/proxy?url=...)
+    // 僅在本地 file:/// 或 localhost 開啟時使用，避免在 https:// 產生 Mixed Content 報錯！
+    const isLocal = window.location.protocol === 'file:' || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    if (!feedData && isLocal) {
+      try {
+        const localProxyUrl = `http://127.0.0.1:8765/api/proxy?url=${encodeURIComponent(feedUrl)}`;
+        const res = await fetch(localProxyUrl, { signal: AbortSignal.timeout(3000) });
         if (res.ok) {
           const text = await res.text();
           if (text && (text.includes('<rss') || text.includes('<feed') || text.includes('<channel'))) {
@@ -2162,6 +2218,45 @@ class PodcastManager {
 
     this.cachedFeeds.set(feedUrl, feedData);
     return feedData;
+  }
+
+  _parseItunesLookup(json, feedUrl) {
+    const results = json.results || [];
+    const header = results[0] || {};
+    const channelTitle = header.collectionName || 'Podcast 節目';
+    const channelCover = header.artworkUrl600 || header.artworkUrl100 || '';
+
+    const episodes = results.slice(1).map((item, idx) => {
+      const duration = item.trackTimeMillis ? this._formatDuration(Math.round(item.trackTimeMillis / 1000)) : '';
+      let pubDate = '';
+      if (item.releaseDate) {
+        try {
+          const d = new Date(item.releaseDate);
+          if (!isNaN(d.getTime())) {
+            pubDate = d.toLocaleDateString('zh-TW', { year: 'numeric', month: 'short', day: 'numeric' });
+          } else {
+            pubDate = String(item.releaseDate).slice(0, 10);
+          }
+        } catch (e) {
+          pubDate = item.releaseDate;
+        }
+      }
+
+      return {
+        id: item.trackId || item.episodeGuid || `ep-${idx}`,
+        title: item.trackName || `單集 #${idx + 1}`,
+        pubDate: pubDate,
+        duration: duration,
+        desc: (item.description || item.shortDescription || '').replace(/<[^>]*>/g, '').trim().slice(0, 300),
+        audioUrl: item.episodeUrl
+      };
+    }).filter(ep => ep.audioUrl && (ep.audioUrl.startsWith('http://') || ep.audioUrl.startsWith('https://')));
+
+    return {
+      title: channelTitle,
+      cover: channelCover,
+      episodes: episodes
+    };
   }
 
   _parseRss2Json(json, feedUrl) {
@@ -2262,20 +2357,21 @@ class PodcastManager {
   }
 
   _formatDuration(raw) {
-    if (!raw) return '';
-    if (raw.includes(':')) {
-      const parts = raw.split(':');
+    if (!raw && raw !== 0) return '';
+    const str = String(raw).trim();
+    if (str.includes(':')) {
+      const parts = str.split(':');
       if (parts.length === 2) return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}`;
       if (parts.length === 3) return `${parts[0]}:${parts[1].padStart(2, '0')}:${parts[2].padStart(2, '0')}`;
-      return raw;
+      return str;
     }
-    const sec = parseInt(raw);
+    const sec = parseInt(str, 10);
     if (!isNaN(sec)) {
       const m = Math.floor(sec / 60);
       const s = sec % 60;
       return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
     }
-    return raw;
+    return str;
   }
 
   togglePreview(audioUrl, onPlayChange) {
@@ -3172,7 +3268,7 @@ class UIController {
     if (searchInput) searchInput.value = '';
 
     try {
-      const feedData = await this.podcasts.fetchFeed(podcast.feedUrl);
+      const feedData = await this.podcasts.fetchFeed(podcast.feedUrl, podcast.appleId);
       this.currentEpisodes = feedData.episodes || [];
       if (feedData.cover) {
         podcast.cover = feedData.cover;
